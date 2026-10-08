@@ -28,23 +28,24 @@ What a consumer can depend on, one capability per row.\
 A capability is named for what it offers, not for who offers it, so two components that provide the same capability share its name, and the overlap is visible.\
 **Provides** means this component implements the capability; **carries from X** means it passes X's capability through its own interface.\
 **Implied by Y** marks a guarantee that holds whenever Y is used, so it is never chosen on its own.\
+**Requires** names the capabilities of other components a row depends on, as `component:capability`, so a census can follow an application's demand down through the components it reaches.\
 The trait column names any trait a system takes on by using the capability.
 
-| Capability | Relation | What a consumer can depend on | Trait |
-|---|---|---|---|
-| `honest-call-ending` | provides | Calling a named operation yields exactly one ending: answered, refused with a reason, not delivered, or unknown. | none |
-| `caller-chosen-bound` | provides | The caller sets the bound: total time for a whole answer, time to the next sign of life for an answer in parts. | none |
-| `answer-in-parts` | provides | An answer may arrive as ordered parts; a missing part, or a stop before the end, ends the invocation as unknown, and parts already received stand. | none |
-| `cancel-invocation` | provides | A caller may end an invocation early, and the operation is told. | none |
-| `invocation-identity` | provides | Every invocation carries an identity, and a repeat may reuse it so the owner of an effect can recognise it. | none |
-| `request-correlation` | provides | A reply is paired with the invocation it answers. | none |
-| `not-delivered-signal` | provides, implied by `honest-call-ending` | "Not delivered" is reported only when the delivery beneath refused outright, so repeating is then safe. | none |
-| `actionable-refusal` | provides | A refusal states what was wrong, why, and how to fix it. | none |
-| `operation-descriptions` | provides | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
-| `declared-shape-validation` | provides | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
-| `serve-named-operations` | provides | A host exposes declared operations by name, and every invocation gets exactly one ending even when the operation fails. | none |
-| `peer-identity-evidence` | carries from agp | The operation receives the delivery beneath's evidence of who is calling. | none |
-| `advertiser-instance-select` | carries from agp | A caller may name the instance it means; opcall passes it on and never chooses one. | none |
+| Capability | Relation | Requires | What a consumer can depend on | Trait |
+|---|---|---|---|---|
+| `honest-call-ending` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-disposition-report`, `agp:delivery-context` | Calling a named operation yields exactly one ending: answered, refused with a reason, not delivered, or unknown. | none |
+| `caller-chosen-bound` | provides | none | The caller sets the bound: total time for a whole answer, time to the next sign of life for an answer in parts. | none |
+| `answer-in-parts` | provides | `agp:route-or-refuse-send`, `agp:delivery-context` | An answer may arrive as ordered parts; a missing part, or a stop before the end, ends the invocation as unknown, and parts already received stand. | none |
+| `cancel-invocation` | provides | `agp:route-or-refuse-send` | A caller may end an invocation early, and the operation is told. | none |
+| `invocation-identity` | provides | none | Every invocation carries an identity, and a repeat may reuse it so the owner of an effect can recognise it. | none |
+| `request-correlation` | provides | `agp:delivery-context` | A reply is paired with the invocation it answers. | none |
+| `not-delivered-signal` | provides, implied by `honest-call-ending` | `agp:route-or-refuse-send`, `agp:delivery-disposition-report` | "Not delivered" is reported only when the delivery beneath refused outright, so repeating is then safe. | none |
+| `actionable-refusal` | provides | none | A refusal states what was wrong, why, and how to fix it. | none |
+| `operation-descriptions` | provides | none | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
+| `declared-shape-validation` | provides | none | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
+| `serve-named-operations` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-context` | A host exposes declared operations by name, and every invocation gets exactly one ending even when the operation fails. | none |
+| `peer-identity-evidence` | carries from agp | none | The operation receives the delivery beneath's evidence of who is calling. | none |
+| `advertiser-instance-select` | carries from agp | none | A caller may name the instance it means; opcall passes it on and never chooses one. | none |
 
 opcall holds nothing across a restart, coordinates no actors and contains no model, so none of its capabilities brings a trait.
 
