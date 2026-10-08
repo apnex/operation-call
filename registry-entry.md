@@ -42,7 +42,7 @@ The trait column names any trait a system takes on by using the capability.
 | `not-delivered-signal` | provides, implied by `honest-call-ending` | `agp:route-or-refuse-send`, `agp:delivery-disposition-report` | "Not delivered" is reported only when the delivery beneath refused outright, so repeating is then safe. | none |
 | `actionable-refusal` | provides | none | A refusal states what was wrong, why, and how to fix it. | none |
 | `operation-descriptions` | provides | none | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
-| `declared-shape-validation` | provides | none | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
+| `declared-shape-validation` | carries from shapecheck | none | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
 | `serve-named-operations` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-context` | A host exposes declared operations by name, and every invocation gets exactly one ending even when the operation fails. | none |
 | `peer-identity-evidence` | carries from agp | none | The operation receives the delivery beneath's evidence of who is calling. | none |
 | `advertiser-instance-select` | carries from agp | none | A caller may name the instance it means; opcall passes it on and never chooses one. | none |
@@ -104,6 +104,7 @@ Its caller side and host side are halves of one duty, not separate components.
 **Consumes, through a declared contract:**
 
 - `agp`: `expose-named-endpoint`, `route-or-refuse-send`, `delivery-disposition-report`, `delivery-context`, `advertiser-instance-select`, `peer-identity-evidence`
+- `shapecheck`: `declared-shape-validation`
 
 AGP's capabilities are read from `upstream/agp-capabilities.md`.\
 Whether opcall pairs replies through AGP's `request-correlation` or its own is open; see `capability-overlaps.md`.
