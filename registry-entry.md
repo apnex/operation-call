@@ -27,6 +27,7 @@ Give every invocation of a named operation exactly one honest ending, within a b
 What a consumer can depend on, one capability per row.\
 A capability is named for what it offers, not for who offers it, so two components that provide the same capability share its name, and the overlap is visible.\
 **Provides** means this component implements the capability; **carries from X** means it passes X's capability through its own interface.\
+**Implied by Y** marks a guarantee that holds whenever Y is used, so it is never chosen on its own.\
 The trait column names any trait a system takes on by using the capability.
 
 | Capability | Relation | What a consumer can depend on | Trait |
@@ -37,7 +38,7 @@ The trait column names any trait a system takes on by using the capability.
 | `cancel-invocation` | provides | A caller may end an invocation early, and the operation is told. | none |
 | `invocation-identity` | provides | Every invocation carries an identity, and a repeat may reuse it so the owner of an effect can recognise it. | none |
 | `request-correlation` | provides | A reply is paired with the invocation it answers. | none |
-| `not-delivered-signal` | provides | "Not delivered" is reported only when the delivery beneath refused outright, so repeating is then safe. | none |
+| `not-delivered-signal` | provides, implied by `honest-call-ending` | "Not delivered" is reported only when the delivery beneath refused outright, so repeating is then safe. | none |
 | `actionable-refusal` | provides | A refusal states what was wrong, why, and how to fix it. | none |
 | `operation-descriptions` | provides | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
 | `declared-shape-validation` | provides | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
