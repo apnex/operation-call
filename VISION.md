@@ -17,7 +17,8 @@ A change of direction is recorded as a decision first and absorbed here afterwar
 Four terms in that sentence carry weight, so this document defines them rather than leaving them to the reader.
 
 **Named operation** means a capability addressed by what it does, never by where it runs.\
-Finding where it runs belongs to the delivery beneath.
+Finding where it runs belongs to the delivery beneath.\
+A caller may still name which instance it means; opcall passes that on and never chooses one itself.
 
 **Invocation** means one caller asking one operation once, under one identity, for one outcome - what SIP calls a transaction.\
 Its answer may arrive whole or in ordered parts; either way it ends exactly once.
@@ -26,8 +27,11 @@ Its answer may arrive whole or in ordered parts; either way it ends exactly once
 
 - answered;
 - refused by the operation, with its reason;
-- not delivered, so repeating it is safe;
+- not delivered - the delivery beneath refused it outright, so repeating it is safe;
 - unknown - it may have reached the operation, and no answer came within the bound.
+
+Anything less certain than an outright refusal is unknown, never not delivered.\
+An answer arriving in parts that stops before its end ends as unknown; the parts already received stand.
 
 **A bound it chose** means the caller, not the operation or the network, decides how long it waits: for the end, or, for an answer arriving in parts, for the next sign of life.
 
@@ -74,7 +78,7 @@ It gives a repeated invocation the same identity, so whatever owns the effect ca
 
 **Not a retrier.**\
 It never repeats an invocation on its own.\
-Only the caller knows whether repeating is safe.
+The caller decides whether to repeat; opcall tells it when repeating is safe.
 
 **Not a broker or a bus.**\
 There are no topics, no subscriptions, and no fan-out.\
