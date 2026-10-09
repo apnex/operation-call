@@ -1,6 +1,6 @@
 # opcall - Vision
 
-**Status: draft, enduring once ratified.**\
+**Status: ratified by the director, 2026-10-09 (`docs/DECISIONS.md`, `D5`); enduring.**\
 This document states why opcall exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
