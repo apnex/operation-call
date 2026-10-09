@@ -28,7 +28,7 @@ A caller may end an invocation before it is complete; the operation is told, and
 
 - answered;
 - refused by the operation, with its reason;
-- not delivered - the delivery beneath refused it outright, so repeating it is safe;
+- not delivered - the delivery beneath refused this attempt outright, so it had no effect;
 - unknown - it may have reached the operation, and no answer came within the bound.
 
 Anything less certain than an outright refusal is unknown, never not delivered.\
@@ -79,7 +79,7 @@ It gives a repeated invocation the same identity, so whatever owns the effect ca
 
 **Not a retrier.**\
 It never repeats an invocation on its own.\
-The caller decides whether to repeat; opcall tells it when repeating is safe.
+The caller decides whether to repeat; opcall tells it how each attempt ended, and whether an earlier attempt of the same invocation may have had an effect.
 
 **Not a broker or a bus.**\
 There are no topics, no subscriptions, and no fan-out.\
