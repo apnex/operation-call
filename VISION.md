@@ -21,7 +21,8 @@ Finding where it runs belongs to the delivery beneath.\
 A caller may still name which instance it means; opcall passes that on and never chooses one itself.
 
 **Invocation** means one caller asking one operation once, under one identity, for one outcome - what SIP calls a transaction.\
-Its answer may arrive whole or in ordered parts; either way it ends exactly once.
+Its answer may arrive whole or in ordered parts; either way it ends exactly once.\
+A caller may end an invocation before it is complete; the operation is told, and parts already received stand.
 
 **How it ended** is one of four things, and which one is never guessed:
 
