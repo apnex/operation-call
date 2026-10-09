@@ -111,7 +111,7 @@ AGP's capabilities are read from zorg's `upstream/agp-capabilities.md`.\
 Each attempt is paired through AGP's `correlation-label` (zorg's `D4`); a delivery layer without such a label is given one by opcall's adapter, inside the payload.
 
 **Composed-by:** nothing yet.\
-entityapi consumes it once built.
+Its first consumer, once built, is entityapi.
 
 The registry's edge vocabulary has `composes` and `composed-by` but no edge for one component using another's contract without containing it.\
 `Consumes` is written here to record that relation, and the gap is a finding for the registry.
