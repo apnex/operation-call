@@ -37,8 +37,8 @@ The trait column names any trait a system takes on by using the capability.
 | `caller-chosen-bound` | provides | none | The caller sets the bound: total time for a whole answer, time to the next sign of life for an answer in parts. | none |
 | `answer-in-parts` | provides | `agp:route-or-refuse-send`, `agp:delivery-context` | An answer may arrive as ordered parts; a missing part, or a stop before the end, ends the invocation as unknown, and parts already received stand. | none |
 | `cancel-invocation` | provides | `agp:route-or-refuse-send` | A caller may end an invocation early, and the operation is told. | none |
-| `invocation-identity` | provides | none | Every invocation carries an identity, and a repeat may reuse it so the owner of an effect can recognise it. | none |
-| `request-correlation` | provides | `agp:delivery-context` | A reply is paired with the invocation it answers. | none |
+| `invocation-identity` | provides | none | Every invocation carries an identity that stays the same when the invocation is repeated, so the owner of an effect can recognise the repeat; it travels in opcall's own envelope. | none |
+| `request-correlation` | provides | `agp:correlation-label`, `agp:delivery-context` | A reply or a delivery report is paired with the attempt it answers; each attempt carries its own correlation in the delivery beneath's label, so a late reply to an earlier attempt is never taken for a later one's. | none |
 | `not-delivered-signal` | provides, implied by `honest-call-ending` | `agp:route-or-refuse-send`, `agp:delivery-disposition-report` | "Not delivered" is reported only when the delivery beneath refused outright, so repeating is then safe. | none |
 | `call-refusal` | provides | none | When an operation refuses an invocation, the caller receives what was wrong, why, and how to fix it, in the shared refusal form, carrying any reason another component supplied unchanged. | none |
 | `operation-descriptions` | provides | none | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
@@ -103,11 +103,11 @@ Its caller side and host side are halves of one duty, not separate components.
 
 **Consumes, through a declared contract:**
 
-- `agp`: `expose-named-endpoint`, `route-or-refuse-send`, `delivery-disposition-report`, `delivery-context`, `advertiser-instance-select`, `peer-identity-evidence`
+- `agp`: `expose-named-endpoint`, `route-or-refuse-send`, `delivery-disposition-report`, `correlation-label`, `delivery-context`, `advertiser-instance-select`, `peer-identity-evidence`
 - `shapecheck`: `declared-shape-validation`
 
 AGP's capabilities are read from `upstream/agp-capabilities.md`.\
-Whether opcall pairs replies through AGP's `request-correlation` or its own is open; see `capability-overlaps.md`.
+Each attempt is paired through AGP's `correlation-label` (`D4`); a delivery layer without such a label is given one by opcall's adapter, inside the payload.
 
 **Composed-by:** nothing yet.\
 entityapi consumes it once built.
