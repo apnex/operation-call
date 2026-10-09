@@ -54,7 +54,7 @@ opcall holds nothing across a restart, coordinates no actors and contains no mod
 ## Reference
 
 Not yet built.\
-Vision: `opcall/VISION.md` in the zorg repository, which will hold the implementation until the component earns a repository of its own.
+This repository, `apnex/opcall`, private until its first working code: `VISION.md` and, once built, the implementation.
 
 ---
 
@@ -106,8 +106,8 @@ Its caller side and host side are halves of one duty, not separate components.
 - `agp`: `expose-named-endpoint`, `route-or-refuse-send`, `delivery-disposition-report`, `correlation-label`, `delivery-context`, `advertiser-instance-select`, `peer-identity-evidence`
 - `shapecheck`: `declared-shape-validation`
 
-AGP's capabilities are read from `upstream/agp-capabilities.md`.\
-Each attempt is paired through AGP's `correlation-label` (`D4`); a delivery layer without such a label is given one by opcall's adapter, inside the payload.
+AGP's capabilities are read from zorg's `upstream/agp-capabilities.md`.\
+Each attempt is paired through AGP's `correlation-label` (zorg's `D4`); a delivery layer without such a label is given one by opcall's adapter, inside the payload.
 
 **Composed-by:** nothing yet.\
 entityapi consumes it once built.
