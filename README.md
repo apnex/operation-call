@@ -1,4 +1,4 @@
-# opcall
+# operation-call
 
 Give every invocation of a named operation exactly one honest ending, within a bound its caller chose.
 

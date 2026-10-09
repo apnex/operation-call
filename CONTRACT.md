@@ -1,7 +1,7 @@
 ---
 id: unminted
 category: component
-title: opcall - named operations with an honest ending over one-way delivery
+title: operation-call - named operations with an honest ending over one-way delivery
 status: draft
 hydrate-when: Parts of your system call each other by name, and a caller must know how each call ended, including when that cannot be known
 sovereignty: internal
@@ -9,9 +9,9 @@ supersedes: []
 related: [C0, C1, A3]
 ---
 
-# opcall
+# operation-call
 
-The contract of record for opcall: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
+The contract of record for operation-call: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
 It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
 The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
 
@@ -38,24 +38,24 @@ The trait column names any trait a system takes on by using the capability.
 | `caller-chosen-bound` | provides | none | The caller sets the bound: total time for a whole answer, time to the next sign of life for an answer in parts. | none |
 | `answer-in-parts` | provides | `agp:route-or-refuse-send`, `agp:delivery-context` | An answer may arrive as ordered parts; a missing part, or a stop before the end, ends the invocation as unknown, and parts already received stand. | none |
 | `cancel-invocation` | provides | `agp:route-or-refuse-send` | A caller may end an invocation early, and the operation is told. | none |
-| `invocation-identity` | provides | none | Every invocation carries an identity that stays the same when the invocation is repeated, so the owner of an effect can recognise the repeat; it travels in opcall's own envelope. | none |
+| `invocation-identity` | provides | none | Every invocation carries an identity that stays the same when the invocation is repeated, so the owner of an effect can recognise the repeat; it travels in operation-call's own envelope. | none |
 | `request-correlation` | provides | `agp:correlation-label`, `agp:delivery-context` | A reply or a delivery report is paired with the attempt it answers; each attempt carries its own correlation in the delivery beneath's label, so a late reply to an earlier attempt is never taken for a later one's. | none |
 | `not-delivered-signal` | provides, implied by `honest-call-ending` | `agp:route-or-refuse-send`, `agp:delivery-disposition-report` | "Not delivered" is reported only when the delivery beneath refused the attempt outright, so that attempt had no effect; it proves nothing about earlier attempts of the same invocation, whose uncertainty stands. | none |
 | `call-refusal` | provides | none | When an operation refuses an invocation, the caller receives what was wrong, why, and how to fix it, in the shared refusal form, carrying any reason another component supplied unchanged. | none |
 | `operation-descriptions` | provides | none | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
-| `declared-shape-validation` | carries from shapecheck | none | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
+| `declared-shape-validation` | carries from shape-check | none | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
 | `serve-named-operations` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-context` | A host exposes declared operations by name, and every invocation gets exactly one ending even when the operation fails. | none |
 | `peer-identity-evidence` | carries from agp | none | The operation receives the delivery beneath's evidence of who is calling. | none |
-| `advertiser-instance-select` | carries from agp | none | A caller may name the instance it means; opcall passes it on and never chooses one. | none |
+| `advertiser-instance-select` | carries from agp | none | A caller may name the instance it means; operation-call passes it on and never chooses one. | none |
 
-opcall holds nothing across a restart, coordinates no actors and contains no model, so none of its capabilities brings a trait.
+operation-call holds nothing across a restart, coordinates no actors and contains no model, so none of its capabilities brings a trait.
 
 ---
 
 ## Reference
 
 Not yet built.\
-This repository, `apnex/opcall`, private until its first working code: `VISION.md` and, once built, the implementation.
+This repository, `apnex/operation-call`, private until its first working code: `VISION.md` and, once built, the implementation.
 
 ---
 
@@ -75,7 +75,7 @@ This repository, `apnex/opcall`, private until its first working code: `VISION.m
 
 **It is the wrong tool when**
 
-| You need | Reach elsewhere, because opcall is |
+| You need | Reach elsewhere, because operation-call is |
 |---|---|
 | a call that survives a restart, or delivery that is retried for you | not a store and not a retrier |
 | topics, subscriptions, or one message to many callers | not a broker or a bus |
@@ -90,10 +90,10 @@ This repository, `apnex/opcall`, private until its first working code: `VISION.m
 Internal and sovereign, so a fit gap has somewhere to go.
 
 1. Record a measured gap where both sides can see it.
-2. Resolve it by adjusting opcall, so every consumer gets the change, or by fracturing it when the gap reveals a second duty.
+2. Resolve it by adjusting operation-call, so every consumer gets the change, or by fracturing it when the gap reveals a second duty.
 3. Never fork.
 
-The delivery beneath is reached through a port, so a new delivery layer is an adapter rather than a change to opcall.
+The delivery beneath is reached through a port, so a new delivery layer is an adapter rather than a change to operation-call.
 
 ---
 
@@ -105,13 +105,13 @@ Its caller side and host side are halves of one duty, not separate components.
 **Consumes, through a declared contract:**
 
 - `agp`: `expose-named-endpoint`, `route-or-refuse-send`, `delivery-disposition-report`, `correlation-label`, `delivery-context`, `advertiser-instance-select`, `peer-identity-evidence`
-- `shapecheck`: `declared-shape-validation`
+- `shape-check`: `declared-shape-validation`
 
 AGP's capabilities are read from zorg's `upstream/agp-capabilities.md`.\
-Each attempt is paired through AGP's `correlation-label` (zorg's `D4`); a delivery layer without such a label is given one by opcall's adapter, inside the payload.
+Each attempt is paired through AGP's `correlation-label` (zorg's `D4`); a delivery layer without such a label is given one by operation-call's adapter, inside the payload.
 
 **Composed-by:** nothing yet.\
-Its first consumer, once built, is entityapi.
+Its first consumer, once built, is entity-api.
 
 The registry's edge vocabulary has `composes` and `composed-by` but no edge for one component using another's contract without containing it.\
 `Consumes` is written here to record that relation, and the gap is a finding for the registry.

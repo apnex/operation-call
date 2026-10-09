@@ -1,7 +1,7 @@
-# opcall - Vision
+# operation-call - Vision
 
 **Status: ratified by the director, 2026-10-09 (zorg's `docs/DECISIONS.md`, `D5`); enduring.**\
-This document states why opcall exists and what it will never be.\
+This document states why operation-call exists and what it will never be.\
 It carries no current state, no roadmap, and no schedule.
 
 Holding this document authorises nothing.\
@@ -18,7 +18,7 @@ Four terms in that sentence carry weight, so this document defines them rather t
 
 **Named operation** means a capability addressed by what it does, never by where it runs.\
 Finding where it runs belongs to the delivery beneath.\
-A caller may still name which instance it means; opcall passes that on and never chooses one itself.
+A caller may still name which instance it means; operation-call passes that on and never chooses one itself.
 
 **Invocation** means one caller asking one operation once, under one identity, for one outcome - what SIP calls a transaction.\
 Its answer may arrive whole or in ordered parts; either way it ends exactly once.\
@@ -49,7 +49,7 @@ It rebuilds the hardest part worst, which is telling "it failed" from "it may ha
 An agent told "failed" when the truth is "unknown" repeats a write that already landed.
 
 Existing request-response frameworks need an address and a connection before they start.\
-Instead, opcall keeps addressing by name, and adds an answer and an honest ending.
+Instead, operation-call keeps addressing by name, and adds an answer and an honest ending.
 
 ---
 
@@ -79,7 +79,7 @@ It gives a repeated invocation the same identity, so whatever owns the effect ca
 
 **Not a retrier.**\
 It never repeats an invocation on its own.\
-The caller decides whether to repeat; opcall tells it how each attempt ended, and whether an earlier attempt of the same invocation may have had an effect.
+The caller decides whether to repeat; operation-call tells it how each attempt ended, and whether an earlier attempt of the same invocation may have had an effect.
 
 **Not a broker or a bus.**\
 There are no topics, no subscriptions, and no fan-out.\

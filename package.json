@@ -1,5 +1,5 @@
 {
-  "name": "@apnex/opcall",
+  "name": "@apnex/operation-call",
   "version": "0.0.0",
   "private": true,
   "description": "Give every invocation of a named operation exactly one honest ending, within a bound its caller chose.",
@@ -7,7 +7,7 @@
   "author": "apnex",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/apnex/opcall.git"
+    "url": "git+https://github.com/apnex/operation-call.git"
   },
   "type": "module",
   "engines": {

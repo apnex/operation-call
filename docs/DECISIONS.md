@@ -36,3 +36,14 @@ This is the first amendment of the ratified vision; it narrows a promise to what
 
 **Alternatives weighed.**\
 Correcting only the contract, leaving the vision promising what the contract denies; deferring until the component is built.
+
+---
+
+## D3 - Renamed operation-call
+
+**Ruled by:** the director, 2026-10-09 (zorg's `D18`).\
+**Affects:** this repository, its package, `VISION.md`, `CONTRACT.md` and `README.md`.
+
+**Ruling.**\
+The component formerly named opcall is named operation-call, in hyphenated whole words like every other name in the workspace; its repository is `apnex/operation-call`, and GitHub redirects the old name.\
+Earlier entries keep the name they were written with.
