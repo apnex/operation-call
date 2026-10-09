@@ -40,7 +40,7 @@ The trait column names any trait a system takes on by using the capability.
 | `invocation-identity` | provides | none | Every invocation carries an identity, and a repeat may reuse it so the owner of an effect can recognise it. | none |
 | `request-correlation` | provides | `agp:delivery-context` | A reply is paired with the invocation it answers. | none |
 | `not-delivered-signal` | provides, implied by `honest-call-ending` | `agp:route-or-refuse-send`, `agp:delivery-disposition-report` | "Not delivered" is reported only when the delivery beneath refused outright, so repeating is then safe. | none |
-| `actionable-refusal` | provides | none | A refusal states what was wrong, why, and how to fix it. | none |
+| `call-refusal` | provides | none | When an operation refuses an invocation, the caller receives what was wrong, why, and how to fix it, in the shared refusal form, carrying any reason another component supplied unchanged. | none |
 | `operation-descriptions` | provides | none | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
 | `declared-shape-validation` | carries from shapecheck | none | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
 | `serve-named-operations` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-context` | A host exposes declared operations by name, and every invocation gets exactly one ending even when the operation fails. | none |
