@@ -78,6 +78,27 @@ export const callArgumentCases: readonly SuiteCase[] = [
 		}),
 	},
 	{
+		name: "a call's input is read once, when the call is made: a getter is read exactly once and its first value is sent, and a getter that throws is a TypeError with nothing sent",
+		run: (h) => inCase(h, {}, async (c) => {
+			const throwing = { get n(): number { throw new Error("no reading"); } };
+			await checkProgrammingErrors(c, [["an input whose getter throws", { input: throwing }]], TypeError);
+			let reads = 0;
+			const input = {
+				get n(): number {
+					reads++;
+					return reads === 1 ? 7 : Number.NaN;
+				},
+			};
+			const before = c.hooks.requests();
+			const runsBefore = c.a.runs.length;
+			const ending = await c.ended({ operation: "echo", input: input as never });
+			same(ending.ending, "answered", "the input read through a getter is sent and answered");
+			same(c.a.runs.slice(runsBefore).map((r) => r.input), [{ n: 7 }], "the operation received exactly the first value");
+			same(reads, 1, "the getter was read exactly once");
+			same(c.hooks.requests(), before + 1, "one request was sent");
+		}),
+	},
+	{
 		name: "every ending is one frozen object holding exactly its fields: answered, refused by the operation, by the shape and before sending, and unknown when the operation failed, its answer could not be sent, and at the bound",
 		run: (h) => inCase(h, {}, async (c) => {
 			const answered = await c.ended({ operation: "echo", input: { a: [1] } });

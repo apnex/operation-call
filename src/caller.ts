@@ -19,7 +19,7 @@
  */
 import type { AgpNode, EndpointName, JsonObject } from "@agp/node";
 import type { CallEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
-import { isJson, type JsonValue } from "./json-value.js";
+import { snapshotJson, type JsonValue } from "./json-value.js";
 import { readMessage, requestSendable, writeRequest, type EndMessage } from "./message-format.js";
 import { isInvocationId, isName, makeAttemptId, makeInvocationId, REPLY_ENDPOINT, type IdentitySource } from "./names.js";
 import { notSendable } from "./refusal.js";
@@ -67,17 +67,37 @@ function agpCodeOf(error: unknown): string {
 	return typeof code === "string" && code.length > 0 ? code : "INTERNAL";
 }
 
-/** Checks a call's arguments; a call that breaks them is the caller's programming error, not an ending. */
-function checkCall(call: CallRequest): void {
+/**
+ * Reads a call's input once into the JSON value the call checks and sends (EM12), so an accessor on the
+ * input is read now and never again; an accessor that throws is the caller's programming error, as a
+ * non-JSON input is.
+ */
+function snapshotInput(input: unknown): JsonValue {
+	let snapshot: JsonValue | undefined;
+	try {
+		snapshot = snapshotJson(input);
+	} catch (error) {
+		throw new TypeError("a call's input could not be read as a JSON value", { cause: error });
+	}
+	if (snapshot === undefined) throw new TypeError("a call's input must be a JSON value");
+	return snapshot;
+}
+
+/**
+ * Checks a call's arguments and gives the input's snapshot; a call that breaks them is the caller's
+ * programming error, not an ending.
+ */
+function checkCall(call: CallRequest): JsonValue {
 	if (call === null || typeof call !== "object") throw new TypeError("invoke needs a call: { host, service, operation, input, bound }");
 	if (typeof call.host !== "string" || call.host.length === 0) throw new TypeError("a call names the host it means as an AGP node identifier");
 	if (!isName(call.service)) throw new TypeError("a call's service must match ^[a-z0-9][a-z0-9-]{0,62}$");
 	if (!isName(call.operation)) throw new TypeError("a call's operation must match ^[a-z0-9][a-z0-9-]{0,62}$");
-	if (!isJson(call.input)) throw new TypeError("a call's input must be a JSON value");
+	const input = snapshotInput(call.input);
 	if (!Number.isInteger(call.bound) || call.bound < 1 || call.bound > MAX_BOUND_MS) throw new RangeError("a call's bound is a whole number of milliseconds from 1 to 2147483647");
 	if (call.invocation !== undefined && !isInvocationId(call.invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
 	if (call.repeat !== undefined && typeof call.repeat !== "boolean") throw new TypeError("a call's repeat flag is true or false");
 	if (call.signal !== undefined && (call.signal === null || typeof call.signal.aborted !== "boolean")) throw new TypeError("a call's signal must be an AbortSignal");
+	return input;
 }
 
 /** Builds a caller on an AGP node, exposing the reply endpoint `operation-call/replies` there. */
@@ -115,13 +135,13 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 	const invoke = async (call: CallRequest): Promise<CallEnding> => {
 		// The bound starts when the caller invokes (EM12): its deadline is read before anything else is done.
 		const start = read();
-		checkCall(call);
+		const input = checkCall(call);
 		const deadline = start + call.bound;
 		const invocation = call.invocation ?? makeInvocationId(identities);
 		const attempt = makeAttemptId(identities, invocation);
 		const operation = call.operation;
 		const address = { invocation, attempt, operation };
-		const request = writeRequest(address, call.input as JsonValue);
+		const request = writeRequest(address, input);
 		const sendable = requestSendable(request);
 		// Prepared: the call's clock is read first, so a bound that passed while preparing wins, and nothing is sent.
 		const left = deadline - read();
