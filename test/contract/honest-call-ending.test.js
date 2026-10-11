@@ -14,7 +14,13 @@
 // Beside them, on a node whose every answer the test controls: each terminal observation - an answer, a
 // refusal, a failed end, AGP's rejection, AGP's report of failure - placed after the bound with the bound's
 // callback held back, and just before the bound, where it wins; and a clock port whose cleanup throws, which
-// changes no ending and leaves no rejection unhandled (F5 of the first verification).
+// changes no ending and leaves no rejection unhandled (F5 of the first verification). A bound's timer that
+// wakes before the deadline on the call's clock is not the bound passing: the call is still waiting, and an
+// answer observed just before the true deadline is taken (F1 of the second verification); on the system's
+// own clock over the production carrier, the suite's case takes an answer produced just before the bound and
+// ends no call before it. A clock whose reading throws once the request is sent cannot show the bound passed:
+// each terminal observation then decides, and a later timer changes nothing; with no observation the timer
+// still ends the call at its bound.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCaller } from "@apnex/operation-call";
@@ -22,6 +28,7 @@ import { registerCallerSuite } from "@apnex/operation-call/caller-suite";
 import { controlledCaller, turns } from "../support/controlled-node.js";
 import { createFakeNode } from "../support/fake-node.js";
 import { directHarness } from "../support/fixture.js";
+import { createEarlyWakingClock, createManualCallClock } from "../support/manual-call-clock.js";
 
 registerCallerSuite((name, run) => test(name, { timeout: 30_000 }, run), directHarness, ["honest-call-ending"]);
 
@@ -160,4 +167,68 @@ test("a fault of AGP's node in the caller's reactions leaves the bound to end th
 	} finally {
 		process.off("unhandledRejection", listener);
 	}
+});
+
+test("a bound's timer waking before the deadline on the call's clock leaves the call waiting, and an answer observed just before the true deadline is taken", { timeout: 10_000 }, async () => {
+	const manual = createManualCallClock(0);
+	// The timer wakes 0.75 ms before each delay it is given has passed on the clock the caller reads.
+	const clock = createEarlyWakingClock(manual, 0.75);
+	const t = await controlledCaller({ clock });
+	const call = watch(t.caller.invoke(CALL));
+	await turns();
+	t.admit({ outcomes: [{ kind: "delivered" }] });
+	manual.advance(99.25);
+	await turns();
+	assert.equal(call.settled, false, "the timer woke at 99.25 ms of a bound of 100: the call still waits");
+	assert.deepEqual(clock.delays, [100, 1], "the timer was set again for the time left, rounded up");
+	manual.move(0.5);
+	await t.reply({ outcome: "answered", answer: "just in time" });
+	await turns();
+	assert.deepEqual([call.value?.ending, call.value?.answer], ["answered", "just in time"], "the answer at 99.75 ms is taken");
+	assert.ok(Object.isFrozen(call.value));
+	manual.advance(10);
+	await turns();
+	assert.equal(call.count, 1, "the timer, run later, changes nothing");
+	assert.equal(manual.pending(), 0, "no timer is left behind");
+});
+
+test("a call clock whose reading throws once the request is sent cannot show the bound passed: each terminal observation decides, and a later timer changes nothing", { timeout: 10_000 }, async () => {
+	const variants = [
+		["an answer", (t) => { t.admit(undefined); return t.reply({ outcome: "answered", answer: 1 }); }, { ending: "answered", answer: 1 }],
+		["a refusal", (t) => { t.admit(undefined); return t.reply({ outcome: "refused", refusal: REFUSAL }); }, { ending: "refused", refusal: REFUSAL }],
+		["a failed end", (t) => { t.admit(undefined); return t.reply({ outcome: "failed", reason: "operation-failed", agpCode: null }); }, { ending: "unknown", reason: "operation-failed", agpCode: null, deliveryReport: null }],
+		["AGP's rejection", (t) => t.reject("NO_ROUTE"), { ending: "not-delivered", agpCode: "NO_ROUTE", proxyCode: null, earlierAttemptsUncertain: false }],
+		["AGP's report of failure", (t) => t.admit({ outcomes: [{ kind: "failed", code: "INSTANCE_UNREACHABLE" }] }), { ending: "not-delivered", agpCode: "INSTANCE_UNREACHABLE", proxyCode: null, earlierAttemptsUncertain: false }],
+	];
+	for (const [what, observe, expected] of variants) {
+		const manual = createManualCallClock(0);
+		let broken = false;
+		const clock = { now() { if (broken) throw new Error("clock fault"); return manual.now(); }, schedule: (delay, callback) => manual.schedule(delay, callback) };
+		const t = await controlledCaller({ clock });
+		const call = watch(t.caller.invoke(CALL));
+		await turns();
+		assert.equal(t.sends.length, 1, `${what}: the request was sent`);
+		broken = true;
+		manual.move(50);
+		await observe(t);
+		await turns();
+		assert.equal(call.settled, true, `${what}: the observation ends the call`);
+		const { invocation, attempt, operation, ...rest } = call.value;
+		assert.equal(operation, "op");
+		assert.deepEqual(rest, expected, `${what}: the observed event decides`);
+		assert.ok(Object.isFrozen(call.value), `${what}: frozen`);
+		manual.advance(100);
+		await turns();
+		assert.equal(call.count, 1, `${what}: the timer, run later, changes nothing`);
+	}
+	// With nothing observed, a reading that throws at the timer's wakeup leaves nothing to wait on: the call ends at its bound.
+	const manual = createManualCallClock(0);
+	let broken = false;
+	const t = await controlledCaller({ clock: { now() { if (broken) throw new Error("clock fault"); return manual.now(); }, schedule: (delay, callback) => manual.schedule(delay, callback) } });
+	const call = watch(t.caller.invoke(CALL));
+	await turns();
+	broken = true;
+	manual.advance(100);
+	await turns();
+	assert.deepEqual([call.value?.ending, call.value?.reason, call.value?.agpCode], ["unknown", "bound-passed", null]);
 });

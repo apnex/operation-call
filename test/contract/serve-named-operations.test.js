@@ -8,7 +8,9 @@
 // with no AGP code; and an answer whose send AGP refuses replaced once by answer-not-sendable with AGP's
 // code, nothing sent when that fails too; a getter or a proxy that throws on the result, or nested in its
 // refusal or answer, ending failed with operation-failed and no AGP code, before the caller's bound, a result
-// read once. Two hosts pinned apart are the suite's advertiser-instance-select.
+// read once; and an object reached by two paths in an answer or a refusal read once, its first snapshot sent
+// in every place, a second read that would give a value that is not JSON or throw never happening (F2 of the
+// second verification). Two hosts pinned apart are the suite's advertiser-instance-select.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createOperationHost } from "@apnex/operation-call";
@@ -161,6 +163,25 @@ test("a result read through getters is read once: what the host judges is what i
 	await raw.repliesReach(1);
 	assert.deepEqual(raw.replies[0].payload, end({ outcome: "answered", answer: { n: 1 } }));
 	assert.deepEqual([outcomeReads, answerReads], [1, 1]);
+});
+
+test("an object reached by two paths in an answer or a refusal is read once: its first snapshot is sent in every place, and a second read never happens", async (t) => {
+	let answerReads = 0;
+	let refusalReads = 0;
+	const sharedAnswer = { get n() { return ++answerReads === 1 ? 7 : Number.NaN; } };
+	const sharedDetails = { get n() { if (++refusalReads > 1) throw new Error("a second read"); return 1; } };
+	const refusal = { part: "p", code: "c", what: "w", why: "w", fix: "f", details: { first: sharedDetails, list: [sharedDetails, { again: sharedDetails }] } };
+	const raw = await openRaw(t, { declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, (input) => input === 0
+		? { outcome: "answered", answer: { first: sharedAnswer, second: [sharedAnswer, sharedAnswer] } }
+		: { outcome: "refused", refusal }), endpoints: ["svc/op"] });
+	await raw.send("svc/op", request("op", 0));
+	await raw.repliesReach(1);
+	const second = `${INVOCATION}.00000201`;
+	await raw.send("svc/op", request("op", 1, { attempt: second }), second);
+	await raw.repliesReach(2);
+	assert.deepEqual(raw.replies[0].payload, end({ outcome: "answered", answer: { first: { n: 7 }, second: [{ n: 7 }, { n: 7 }] } }), "the answer, not answer-not-sendable");
+	assert.deepEqual(raw.replies[1].payload, end({ outcome: "refused", refusal: { ...refusal, details: { first: { n: 1 }, list: [{ n: 1 }, { again: { n: 1 } }] } } }, second), "the refusal, not operation-failed");
+	assert.deepEqual([answerReads, refusalReads], [1, 1], "each getter read exactly once");
 });
 
 test("over AGP, a result whose inspection throws ends the caller's invocation unknown with operation-failed and no AGP code, before its bound", async (t) => {

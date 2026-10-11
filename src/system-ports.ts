@@ -33,11 +33,23 @@ export interface CallClock {
 	schedule(delayMs: number, callback: () => void): ClockTimer;
 }
 
-/** The default call clock: `performance.now()` and `setTimeout`. */
+/**
+ * The default call clock: `performance.now()` and `setTimeout`. A timer's wakeup is not the delay passing:
+ * `setTimeout` keeps its own time, which can run ahead of `performance.now()`, and it takes whole
+ * milliseconds. So the clock is read at every wakeup, and while the delay has not yet passed on it the timer
+ * is set again for the time remaining, rounded up; the callback runs only once the delay has passed.
+ */
 export const systemCallClock: CallClock = Object.freeze({
 	now: (): number => globalThis.performance.now(),
 	schedule(delayMs: number, callback: () => void): ClockTimer {
-		const handle = globalThis.setTimeout(callback, delayMs);
+		const due = globalThis.performance.now() + delayMs;
+		let handle: ReturnType<typeof globalThis.setTimeout>;
+		const wake = (): void => {
+			const left = due - globalThis.performance.now();
+			if (left > 0) handle = globalThis.setTimeout(wake, Math.ceil(left));
+			else callback();
+		};
+		handle = globalThis.setTimeout(wake, Math.max(0, Math.ceil(delayMs)));
 		return Object.freeze({ cancel: () => globalThis.clearTimeout(handle) });
 	},
 });

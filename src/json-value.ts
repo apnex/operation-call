@@ -85,7 +85,10 @@ export function isJson(value: unknown): value is JsonValue {
  * A plain copy of a value, reading each member exactly once, or undefined when the value is not JSON as
  * `isJson` judges it. A getter or a proxy is read, never trusted: what it gave is what the copy holds, so the
  * copy is judged and sent rather than the value, which could give something else when read again; and one
- * that throws throws from here, for the caller of this function to contain.
+ * that throws throws from here, for the caller of this function to contain. An object reached by more than
+ * one path is read the first time only: its completed copy is kept by the object's identity for this one
+ * value and given again at every later reference, while the containers still being copied are tracked apart,
+ * so a value holding itself is still not JSON.
  */
 export function snapshotJson(value: unknown): JsonValue | undefined {
 	interface Slot { readonly value: unknown; readonly store: (copy: JsonValue) => void }
@@ -93,9 +96,16 @@ export function snapshotJson(value: unknown): JsonValue | undefined {
 	const stack: Slot[] = [{ value, store: (copy) => { result = copy; } }];
 	// The containers being copied above the current slot, so a value holding itself is found.
 	const open = new Set<object>();
-	const exits: { readonly item: object; readonly depth: number }[] = [];
+	// The containers whose copies are complete, so one reached again is given its first copy, not read again.
+	const done = new Map<object, JsonValue>();
+	interface Exit { readonly item: object; readonly copy: JsonValue; readonly depth: number }
+	const exits: Exit[] = [];
 	while (stack.length > 0) {
-		while (exits.length > 0 && (exits.at(-1) as { depth: number }).depth >= stack.length) open.delete((exits.pop() as { item: object }).item);
+		while (exits.length > 0 && (exits.at(-1) as Exit).depth >= stack.length) {
+			const exit = exits.pop() as Exit;
+			open.delete(exit.item);
+			done.set(exit.item, exit.copy);
+		}
 		const { value: item, store } = stack.pop() as Slot;
 		if (item === null || typeof item === "boolean" || typeof item === "string") {
 			store(item);
@@ -106,7 +116,13 @@ export function snapshotJson(value: unknown): JsonValue | undefined {
 			store(item);
 			continue;
 		}
-		if (typeof item !== "object" || open.has(item)) return undefined;
+		if (typeof item !== "object") return undefined;
+		const first = done.get(item);
+		if (first !== undefined) {
+			store(first);
+			continue;
+		}
+		if (open.has(item)) return undefined;
 		const members: [string | number, unknown][] = [];
 		let copy: JsonValue[] | { [name: string]: JsonValue };
 		if (Array.isArray(item)) {
@@ -124,7 +140,7 @@ export function snapshotJson(value: unknown): JsonValue | undefined {
 		}
 		store(copy);
 		open.add(item);
-		exits.push({ item, depth: stack.length });
+		exits.push({ item, copy, depth: stack.length });
 		const target = copy as { [key: string | number]: JsonValue };
 		for (let i = members.length - 1; i >= 0; i--) {
 			const [key, member] = members[i] as [string | number, unknown];

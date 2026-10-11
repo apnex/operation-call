@@ -99,6 +99,46 @@ export const callArgumentCases: readonly SuiteCase[] = [
 		}),
 	},
 	{
+		name: "an object reached by two paths in a call's input is read once: a getter on it is read exactly once and both places carry its first value, never a second value that is not JSON",
+		run: (h) => inCase(h, {}, async (c) => {
+			let reads = 0;
+			const shared = {
+				get n(): number {
+					reads++;
+					return reads === 1 ? 7 : Number.NaN;
+				},
+			};
+			const before = c.hooks.requests();
+			const runsBefore = c.a.runs.length;
+			const ending = await c.ended({ operation: "echo", input: { first: shared, second: shared } as never });
+			same(ending.ending, "answered", "the input is sent and answered, not refused as non-JSON");
+			same(ending.ending === "answered" ? ending.answer : undefined, { first: { n: 7 }, second: { n: 7 } }, "both places carry the first value");
+			same(c.a.runs.slice(runsBefore).map((r) => r.input), [{ first: { n: 7 }, second: { n: 7 } }], "the operation received the first value in both places");
+			same(reads, 1, "the getter on the object reached twice was read exactly once");
+			same(c.hooks.requests(), before + 1, "one request was sent");
+		}),
+	},
+	{
+		name: "an object reached twice in a call's input whose getter would throw on a second read is read once, so the throw never happens, while a value holding itself is still a TypeError",
+		run: (h) => inCase(h, {}, async (c) => {
+			const leaf = { n: 1 };
+			const looped: { [name: string]: unknown } = { leaf, other: leaf };
+			looped.again = { back: looped };
+			await checkProgrammingErrors(c, [["an input reaching itself through a shared object", { input: looped }]], TypeError);
+			let reads = 0;
+			const shared = {
+				get n(): number {
+					if (++reads > 1) throw new Error("a second read");
+					return 1;
+				},
+			};
+			const ending = await c.ended({ operation: "echo", input: [shared, { inner: shared }, shared] as never });
+			same(ending.ending, "answered", "the call is sent and answered, no second read throwing");
+			same(ending.ending === "answered" ? ending.answer : undefined, [{ n: 1 }, { inner: { n: 1 } }, { n: 1 }], "every place carries the first snapshot");
+			same(reads, 1, "the getter was read exactly once");
+		}),
+	},
+	{
 		name: "every ending is one frozen object holding exactly its fields: answered, refused by the operation, by the shape and before sending, and unknown when the operation failed, its answer could not be sent, and at the bound",
 		run: (h) => inCase(h, {}, async (c) => {
 			const answered = await c.ended({ operation: "echo", input: { a: [1] } });

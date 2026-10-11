@@ -199,10 +199,29 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 				return { ending: "unknown", ...ending, reason: message.reason, agpCode: message.agpCode, deliveryReport: lastReport };
 			});
 
+			/**
+			 * A wakeup of the bound's timer is not an event (EM12): the call's clock is read, and while the deadline
+			 * has not passed on it the timer is set again for the time remaining, rounded up, and checked again.
+			 * The call ends at its bound only once the clock shows the deadline passed. A clock that can no longer
+			 * be read or schedule leaves nothing to wait on, so its timer's word is taken that the bound has passed.
+			 */
+			const wake = (): void => {
+				if (decided) return;
+				let remaining: number;
+				try {
+					remaining = deadline - read();
+				} catch {
+					return atBound();
+				}
+				if (remaining <= 0) return atBound();
+				try {
+					timer = clock.schedule(Math.ceil(remaining), wake);
+				} catch {
+					atBound();
+				}
+			};
 			// A port that cannot schedule the bound is a fault of the port: invoke rejects, and nothing is sent.
-			timer = clock.schedule(left, () => {
-				if (!decided) atBound();
-			});
+			timer = clock.schedule(left, wake);
 			if (decided) return;
 			waiting.set(attempt, { invocation, operation, endpoint, host: call.host, take });
 			let sending: Promise<{ readonly messageId: string }>;

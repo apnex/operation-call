@@ -34,3 +34,19 @@ export function createManualCallClock(start = 1_000_000) {
 		pending: () => tasks.filter((t) => !t.cancelled).length,
 	};
 }
+
+/**
+ * A call clock over a manual one whose timer wakes `earlyMs` before its delay has passed, as a runtime's
+ * timer can against the clock the caller reads; every delay it is asked for is recorded in `delays`.
+ */
+export function createEarlyWakingClock(manual, earlyMs) {
+	const delays = [];
+	return {
+		delays,
+		now: () => manual.now(),
+		schedule(delayMs, callback) {
+			delays.push(delayMs);
+			return manual.schedule(Math.max(0, delayMs - earlyMs), callback);
+		},
+	};
+}

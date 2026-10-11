@@ -8,16 +8,21 @@
 // hop allowance across a hop (zorg's D46); the largest and smallest bounds; time spent preparing counts
 // against the bound, which starts as the caller invokes; on the system's own clock, an answer produced after
 // the bound by a host occupying its thread loses to the bound (EM12); and a bound outside its range throws a
-// RangeError with nothing sent. Beside them, on nodes the test controls: the time left rounded up to a whole
-// millisecond and at least 1, not extending the call's own bound; a bound that passes while preparing ends
-// the call at the bound with nothing sent; and the caller's abort signal given to AGP for the send alone.
+// RangeError with nothing sent; and on the system's own clock, the caller's unchanged default, over the
+// production carrier, no invocation that is never answered ends before its bound (F1 of the second
+// verification). Beside them, on nodes the test controls: the time left rounded up to a whole millisecond and
+// at least 1, not extending the call's own bound; a bound that passes while preparing ends the call at the
+// bound with nothing sent; the caller's abort signal given to AGP for the send alone; a bound's timer that
+// wakes before the deadline on the call's clock, from a fractional delay, ending nothing until the clock
+// shows the deadline passed, each wait set again for the time left rounded up; and the default clock calling
+// back only once its delay, fractional or whole, has passed on its own reading.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createCaller } from "@apnex/operation-call";
+import { createCaller, systemCallClock } from "@apnex/operation-call";
 import { registerCallerSuite } from "@apnex/operation-call/caller-suite";
 import { controlledCaller, turns } from "../support/controlled-node.js";
 import { createCreepingClock, createFakeNode } from "../support/fake-node.js";
-import { createManualCallClock } from "../support/manual-call-clock.js";
+import { createEarlyWakingClock, createManualCallClock } from "../support/manual-call-clock.js";
 import { directHarness } from "../support/fixture.js";
 
 registerCallerSuite((name, run) => test(name, { timeout: 30_000 }, run), directHarness, ["caller-chosen-bound"]);
@@ -99,4 +104,50 @@ test("the caller's abort signal is passed to AGP for the send, with the attempt 
 	assert.deepEqual(options.destinationSelector, { originNodeId: "host-a", mode: "pinned" });
 	await caller.invoke(call(100));
 	assert.equal(Object.hasOwn(node.sends[1].options, "signal"), false, "no signal is passed when the caller gave none");
+});
+
+test("a bound's timer waking before the deadline on the call's clock ends nothing: the caller sets it again for the time left, rounded up, and ends the call once the clock shows the deadline passed", { timeout: 10_000 }, async () => {
+	const manual = createManualCallClock(0);
+	// The timer wakes 0.75 ms before every delay it is given has passed on the clock the caller reads.
+	const clock = createEarlyWakingClock(manual, 0.75);
+	const t = await controlledCaller({ clock });
+	// Reading the input moves the call's clock 0.25 ms, so the first delay is a fractional 9.75 ms.
+	let read = false;
+	const input = { get v() { if (!read) { read = true; manual.move(0.25); } return 1; } };
+	let ended;
+	t.caller.invoke({ ...call(10), input }).then((ending) => { ended = ending; });
+	await turns();
+	assert.equal(t.sends.length, 1, "the request was sent");
+	assert.deepEqual(clock.delays, [9.75], "the first delay is the time left, as it is");
+	manual.advance(9);
+	await turns();
+	assert.equal(ended, undefined, "the timer woke at 9.25 ms, before the deadline at 10: no ending");
+	assert.deepEqual(clock.delays, [9.75, 1], "set again for the 0.75 ms left, rounded up to 1");
+	manual.advance(0.5);
+	await turns();
+	assert.equal(ended, undefined, "at 9.75 ms, before the deadline, still no ending, the timer having woken early twice more");
+	assert.deepEqual(clock.delays, [9.75, 1, 1, 1], "each time set again for the time left, rounded up");
+	manual.advance(0.25);
+	await turns();
+	assert.deepEqual([ended?.ending, ended?.reason, ended?.agpCode], ["unknown", "bound-passed", null], "the call ends at its bound once the clock shows it passed");
+	assert.equal(manual.now(), 10, "and not before");
+	assert.equal(manual.pending(), 0, "no timer is left behind");
+});
+
+test("the default clock calls back only once its delay has passed on its own reading, for fractional and whole delays, and a cancelled timer never calls back", { timeout: 10_000 }, async () => {
+	const delays = [0.3, 1, 1.5, 2.25, 3.7, 4, 5.9, 7.5, 9.99, 10];
+	const runs = [];
+	for (let round = 0; round < 4; round++) {
+		await Promise.all(delays.map((delay) => new Promise((resolve) => {
+			const start = systemCallClock.now();
+			systemCallClock.schedule(delay, () => { runs.push({ delay, elapsed: systemCallClock.now() - start }); resolve(); });
+		})));
+	}
+	assert.equal(runs.length, delays.length * 4);
+	const early = runs.filter((r) => r.elapsed < r.delay);
+	assert.deepEqual(early, [], "no callback ran before its delay had passed on the clock's own reading");
+	let cancelledRan = false;
+	systemCallClock.schedule(1.5, () => { cancelledRan = true; }).cancel();
+	await new Promise((resolve) => systemCallClock.schedule(20, resolve));
+	assert.equal(cancelledRan, false, "a cancelled timer never calls back");
 });
