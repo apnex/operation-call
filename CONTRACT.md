@@ -54,8 +54,10 @@ operation-call holds nothing across a restart, coordinates no actors and contain
 
 ## Reference
 
-Not yet built.\
-This repository, `apnex/operation-call`, private until its first working code: `VISION.md` and, once built, the implementation.
+This repository, `apnex/operation-call`, private until its first working code is certified.\
+The package `@apnex/operation-call` exports `createCaller`, `createOperationHost`, `systemCallClock`, `systemIdentitySource`, `MAX_BOUND_MS` and `DECLARATION_LIMITS`; `@apnex/operation-call/message-format` exports the message format and the caller's own checks; and `@apnex/operation-call/caller-suite` exports `registerCallerSuite` and `callerSuiteRows`, the caller contract suite, as `export-map.json` records.\
+`answer-in-parts` and `cancel-invocation` are deferred under zorg's `D15`.\
+It depends on `@agp/node` and `@apnex/shape-check` through `file:` links, takes AGP's types only, and imports no module particular to one runtime.
 
 ---
 

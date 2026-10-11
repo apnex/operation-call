@@ -1,0 +1,43 @@
+{
+  "package": "@apnex/operation-call",
+  "paths": {
+    ".": {
+      "exports": {
+        "createCaller": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select"] },
+        "MAX_BOUND_MS": { "part": "operation-call", "serves": ["caller-chosen-bound"] },
+        "createOperationHost": { "part": "operation-call", "serves": ["serve-named-operations", "operation-descriptions", "declared-shape-validation", "call-refusal", "request-correlation", "peer-identity-evidence"] },
+        "DECLARATION_LIMITS": { "part": "operation-call", "serves": ["operation-descriptions"] },
+        "systemCallClock": { "part": "operation-call", "serves": ["caller-chosen-bound"] },
+        "systemIdentitySource": { "part": "operation-call", "serves": ["invocation-identity"] }
+      }
+    },
+    "./message-format": {
+      "exports": {
+        "writeRequest": { "part": "operation-call", "serves": ["invocation-identity", "request-correlation"] },
+        "writeEnd": { "part": "operation-call", "serves": ["honest-call-ending", "call-refusal"] },
+        "writePart": { "part": "operation-call", "serves": ["honest-call-ending"] },
+        "readMessage": { "part": "operation-call", "serves": ["honest-call-ending", "request-correlation"] },
+        "crossesAgp": { "part": "operation-call", "serves": ["honest-call-ending", "call-refusal"] },
+        "messageBytes": { "part": "operation-call", "serves": ["call-refusal"] },
+        "requestSendable": { "part": "operation-call", "serves": ["call-refusal"] },
+        "MESSAGE_LIMITS": { "part": "operation-call", "serves": ["call-refusal"] },
+        "NAME_PATTERN": { "part": "operation-call", "serves": ["serve-named-operations"] },
+        "INVOCATION_PATTERN": { "part": "operation-call", "serves": ["invocation-identity"] },
+        "ATTEMPT_PATTERN": { "part": "operation-call", "serves": ["request-correlation"] },
+        "isInvocationId": { "part": "operation-call", "serves": ["invocation-identity"] },
+        "isAttemptId": { "part": "operation-call", "serves": ["request-correlation"] },
+        "REPLY_ENDPOINT": { "part": "operation-call", "serves": ["request-correlation"] }
+      }
+    },
+    "./caller-suite": {
+      "exports": {
+        "registerCallerSuite": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select"] },
+        "callerSuiteRows": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select"] }
+      }
+    }
+  },
+  "deferred": {
+    "answer-in-parts": "D15",
+    "cancel-invocation": "D15"
+  }
+}

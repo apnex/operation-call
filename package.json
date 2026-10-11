@@ -19,6 +19,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./message-format": {
+      "types": "./dist/message-format.d.ts",
+      "default": "./dist/message-format.js"
+    },
+    "./caller-suite": {
+      "types": "./dist/caller-suite.d.ts",
+      "default": "./dist/caller-suite.js"
     }
   },
   "files": [
@@ -29,7 +37,14 @@
     "test": "npm run build && node --test \"test/**/*.test.js\"",
     "docs:check": "tools/check-docs.sh"
   },
+  "dependencies": {
+    "@agp/node": "file:../agp/packages/node",
+    "@apnex/shape-check": "file:../shape-check"
+  },
   "devDependencies": {
+    "@agp/core": "file:../agp/packages/core",
+    "@agp/transport-loopback": "file:../agp/packages/transport-loopback",
+    "@apnex/entity-store": "file:../entity-store",
     "@types/node": "^24.0.0",
     "typescript": "5.9.3"
   }
