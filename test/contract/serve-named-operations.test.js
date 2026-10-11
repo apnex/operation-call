@@ -3,7 +3,7 @@
 //
 // Cases: each declared operation at its own AGP endpoint, observed in AGP's route view, with two hosts
 // advertising the same names; an undeclared operation refused by AGP before any handler or evidence runs;
-// an operation that throws, rejects, or gives no valid result ending failed with operation-threw; an answer
+// an operation that throws, rejects, or gives no valid result ending failed with operation-failed; an answer
 // that cannot cross AGP whole - not JSON, an unsafe integer, 31 levels - replaced by answer-not-sendable
 // with no AGP code; and an answer whose send AGP refuses replaced once by answer-not-sendable with AGP's
 // code, nothing sent when that fails too. Two hosts pinned apart are the suite's advertiser-instance-select.
@@ -48,12 +48,12 @@ test("every request gets exactly one end message when the operation throws, reje
 	let deep = 0;
 	for (let i = 0; i < 30; i++) deep = [deep];
 	const behaviours = [
-		[() => { throw new Error("sync"); }, { outcome: "failed", reason: "operation-threw", agpCode: null }],
-		[async () => { throw new Error("async"); }, { outcome: "failed", reason: "operation-threw", agpCode: null }],
-		[() => undefined, { outcome: "failed", reason: "operation-threw", agpCode: null }],
-		[() => ({ outcome: "answered" }), { outcome: "failed", reason: "operation-threw", agpCode: null }],
-		[() => ({ outcome: "answered", answer: 1, extra: 2 }), { outcome: "failed", reason: "operation-threw", agpCode: null }],
-		[() => ({ outcome: "done", answer: 1 }), { outcome: "failed", reason: "operation-threw", agpCode: null }],
+		[() => { throw new Error("sync"); }, { outcome: "failed", reason: "operation-failed", agpCode: null }],
+		[async () => { throw new Error("async"); }, { outcome: "failed", reason: "operation-failed", agpCode: null }],
+		[() => undefined, { outcome: "failed", reason: "operation-failed", agpCode: null }],
+		[() => ({ outcome: "answered" }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
+		[() => ({ outcome: "answered", answer: 1, extra: 2 }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
+		[() => ({ outcome: "done", answer: 1 }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
 		[() => ({ outcome: "answered", answer: undefined }), { outcome: "failed", reason: "answer-not-sendable", agpCode: null }],
 		[() => ({ outcome: "answered", answer: { n: Number.NaN } }), { outcome: "failed", reason: "answer-not-sendable", agpCode: null }],
 		[() => ({ outcome: "answered", answer: { n: 9007199254740992 } }), { outcome: "failed", reason: "answer-not-sendable", agpCode: null }],

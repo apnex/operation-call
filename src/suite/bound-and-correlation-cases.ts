@@ -8,7 +8,7 @@ import type { AgpNode } from "@agp/node";
 import type { CallEnding } from "../call-types.js";
 import { writeEnd, writePart, REPLY_ENDPOINT } from "../message-format.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { checkAtBound, checkNotDelivered, discardedCount, inCase, SERVICE } from "./suite-support.js";
+import { checkAtBound, checkNotDelivered, discardedCount, inCase, runOutBound, SERVICE } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 export const callerChosenBoundCases: readonly SuiteCase[] = [
@@ -17,13 +17,9 @@ export const callerChosenBoundCases: readonly SuiteCase[] = [
 		run: (h) => inCase(h, {}, async (c) => {
 			const call = watch(c.call({ operation: "hold", bound: 500 }));
 			await until(() => c.a.holds.length === 1, "the operation runs");
-			c.hooks.advanceCallClock(499);
-			await settle();
-			check(!call.settled(), "no ending before the bound");
-			c.hooks.advanceCallClock(1);
-			await until(call.settled, "the ending at the bound");
+			await runOutBound(c, call, 500, { waits: "no ending before the bound", ending: "the ending at the bound" });
 			const last = c.hooks.reports().at(-1);
-			checkAtBound(call.value(), h, last === "delivered" || last === "unknown" ? last : null, "an operation that never answered");
+			checkAtBound(call.value(), last === "delivered" || last === "unknown" ? last : null, "an operation that never answered");
 			const ending = call.value();
 			const before = discardedCount(c);
 			c.a.holds[0]?.release();
@@ -42,9 +38,9 @@ export const callerChosenBoundCases: readonly SuiteCase[] = [
 			c.hooks.advanceAgpClock(10000);
 			await settle();
 			check(!call.settled(), "AGP's clock passing the bound ends nothing");
-			c.hooks.advanceCallClock(50);
-			await until(call.settled, "the ending at the bound");
-			same(call.value()?.ending, "unknown", "the call's own clock decides the bound");
+			const ending = await runOutBound(c, call, 50, { ending: "the ending at the bound" });
+			same(ending?.ending, "unknown", "the call's own clock decides the bound");
+			if (ending?.ending === "unknown") same(ending.reason, "bound-passed", "the reason");
 		}),
 	},
 	{
@@ -77,10 +73,8 @@ export const requestCorrelationCases: readonly SuiteCase[] = [
 		run: (h) => inCase(h, {}, async (c) => {
 			const first = watch(c.call({ operation: "hold", bound: 100 }));
 			await until(() => c.a.holds.length === 1, "the first attempt runs");
-			c.hooks.advanceCallClock(100);
-			await until(first.settled, "the first attempt's ending");
-			const one = first.value() as CallEnding;
-			checkAtBound(one, h, null, "the first attempt");
+			const one = await runOutBound(c, first, 100, { ending: "the first attempt's ending" }) as CallEnding;
+			checkAtBound(one, null, "the first attempt");
 			const second = watch(c.call({ operation: "hold", bound: 1000, invocation: one.invocation, repeat: true }));
 			await until(() => c.a.holds.length === 2, "the second attempt runs");
 			const before = discardedCount(c);
@@ -109,9 +103,8 @@ export const requestCorrelationCases: readonly SuiteCase[] = [
 			check(c.hooks.reports().includes("delivered"), "AGP reports the request delivered");
 			await settle();
 			check(!call.settled(), "the report is not an answer");
-			c.hooks.advanceCallClock(1000);
-			await until(call.settled, "the ending at the bound");
-			checkAtBound(call.value(), h, "delivered", "a delivered request with no answer");
+			await runOutBound(c, call, 1000, { ending: "the ending at the bound" });
+			checkAtBound(call.value(), "delivered", "a delivered request with no answer");
 		}),
 	},
 	{

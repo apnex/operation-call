@@ -98,7 +98,7 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 		const address = { invocation: message.invocation, attempt: message.attempt, operation: message.operation };
 		if (message.outcome === "answered") attempt.decide({ ending: "answered", ...address, answer: message.answer });
 		else if (message.outcome === "refused") attempt.decide({ ending: "refused", ...address, refusal: message.refusal });
-		else attempt.unknown(message.reason === "operation-threw" ? "operation-failed" : "answer-not-sendable", message.agpCode);
+		else attempt.unknown(message.reason, message.agpCode);
 	});
 
 	const invoke = async (call: CallRequest): Promise<CallEnding> => {

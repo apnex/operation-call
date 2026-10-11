@@ -8,7 +8,8 @@
  * other than its endpoint's, is refused as `malformed-request` when its correlation label is an attempt
  * identity, and discarded otherwise. Input that does not fit the declared shape is refused as `input-misfit`
  * with shape-check's misfit records unchanged, before the operation runs. The operation answers or refuses;
- * one that throws ends `failed` with `operation-threw`. An answer that cannot cross AGP whole, or whose send
+ * one that throws, or returns what is neither an answer nor a refusal in EM9's form, ends `failed` with
+ * `operation-failed`, as does a request for which the evidence function fails. An answer that cannot cross AGP whole, or whose send
  * AGP refuses, is replaced by a `failed` end with `answer-not-sendable` and AGP's code, or null when the host
  * found it unsendable itself; when that cannot be sent either, nothing is sent. Every answer goes to the
  * request's source endpoint, pinned to its origin node, under the request's attempt identity.
@@ -143,16 +144,16 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			return;
 		}
 		const address: MessageAddress = { invocation: message.invocation, attempt: message.attempt, operation: operation.name };
-		if (evidenceFailed) return reply(address, { outcome: "failed", reason: "operation-threw", agpCode: null }, delivery);
+		if (evidenceFailed) return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
 		const verdict = operation.prepared.judge(message.input);
 		if (verdict.verdict === "misfit") return reply(address, { outcome: "refused", refusal: inputMisfit(operation.name, verdict.misfits) }, delivery);
 		let result: unknown;
 		try {
 			result = await operation.handler(message.input, Object.freeze({ service, operation: operation.name, invocation: message.invocation, attempt: message.attempt, delivery, evidence: evidenceAnswer, signal }));
 		} catch {
-			return reply(address, { outcome: "failed", reason: "operation-threw", agpCode: null }, delivery);
+			return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
 		}
-		if (!isResult(result)) return reply(address, { outcome: "failed", reason: "operation-threw", agpCode: null }, delivery);
+		if (!isResult(result)) return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
 		if (result.outcome === "refused") return reply(address, { outcome: "refused", refusal: result.refusal }, delivery);
 		if (!isJson(result.answer)) return reply(address, { outcome: "failed", reason: "answer-not-sendable", agpCode: null }, delivery);
 		return reply(address, { outcome: "answered", answer: result.answer as JsonValue }, delivery);

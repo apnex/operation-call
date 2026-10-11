@@ -4,7 +4,7 @@
  * call not delivered, and an answer counts only when it arrives before the bound.
  */
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { checkAtBound, checkNotDelivered, discardedCount, inCase, untilEndedPumping } from "./suite-support.js";
+import { checkAtBound, checkNotDelivered, discardedCount, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 export const channelLossCases: readonly SuiteCase[] = [
@@ -17,12 +17,8 @@ export const channelLossCases: readonly SuiteCase[] = [
 			await until(() => c.hooks.reports().includes("unknown"), "AGP's report of unknown");
 			await settle();
 			check(!call.settled(), "a report of unknown ends nothing");
-			c.hooks.advanceCallClock(999);
-			await settle();
-			check(!call.settled(), "the call waits until its bound");
-			c.hooks.advanceCallClock(1);
-			await until(call.settled, "the ending at the bound");
-			checkAtBound(call.value(), h, "unknown", "a handler that ran before the channel was lost");
+			await runOutBound(c, call, 1000, { waits: "the call waits until its bound", ending: "the ending at the bound" });
+			checkAtBound(call.value(), "unknown", "a handler that ran before the channel was lost");
 			const ending = call.value();
 			c.a.holds[0]?.release();
 			await settle();
@@ -45,9 +41,8 @@ export const channelLossCases: readonly SuiteCase[] = [
 			c.hooks.loseChannel(c.a.nodeId);
 			await settle();
 			check(!call.settled(), "losing the channel after delivery ends nothing");
-			c.hooks.advanceCallClock(1000);
-			await until(call.settled, "the ending at the bound");
-			checkAtBound(call.value(), h, "delivered", "a channel lost after a report of delivered");
+			await runOutBound(c, call, 1000, { ending: "the ending at the bound" });
+			checkAtBound(call.value(), "delivered", "a channel lost after a report of delivered");
 		}),
 	},
 	{
@@ -95,9 +90,8 @@ export const channelLossCases: readonly SuiteCase[] = [
 			c.hooks.loseChannel(c.a.nodeId);
 			await until(() => c.hooks.reports().includes("unknown"), "AGP's report of unknown");
 			await c.hooks.ready(c.a.nodeId, "fixture/hold");
-			c.hooks.advanceCallClock(100000);
-			await until(call.settled, "the ending at the bound");
-			checkAtBound(call.value(), h, "unknown", "the bound, before the answer");
+			await runOutBound(c, call, 100000, { ending: "the ending at the bound" });
+			checkAtBound(call.value(), "unknown", "the bound, before the answer");
 			const ending = call.value();
 			const before = discardedCount(c);
 			c.a.holds[0]?.release();

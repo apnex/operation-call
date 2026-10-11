@@ -146,8 +146,9 @@ export async function openTopology(options = {}) {
 	};
 }
 
-/** operation-call's own caller under its caller suite (operation-proxy's PX10; zorg's E6). */
+/** operation-call's own caller under its caller suite (operation-proxy's PX10; zorg's E6): a direct caller, no hop. */
 export const directHarness = {
+	hopAllowanceMs: 0,
 	async open(options = {}) {
 		const t = await openTopology({ ...options, boundedInvoke: false });
 		return { caller: t.caller, callerNodeId: "caller", hosts: t.hosts, hooks: t.hooks, close: () => t.close() };

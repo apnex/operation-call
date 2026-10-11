@@ -55,8 +55,12 @@ export interface PartMessage {
 /** Any message of operation-call's format. */
 export type OperationCallMessage = RequestMessage | EndMessage | PartMessage;
 
-/** Why an operation's invocation failed rather than ending answered or refused (EM11). */
-export type FailedReason = "operation-threw" | "answer-not-sendable";
+/**
+ * Why an operation's invocation failed rather than ending answered or refused (EM11): `operation-failed` when
+ * the operation threw, returned what is neither an answer nor a refusal in EM9's form, or the host's evidence
+ * port failed for its request; `answer-not-sendable` when its answer could not cross AGP.
+ */
+export type FailedReason = "operation-failed" | "answer-not-sendable";
 
 /** Who a message belongs to: its invocation, its attempt and its operation. */
 export interface MessageAddress {
@@ -119,7 +123,7 @@ export function readMessage(value: unknown): OperationCallMessage | undefined {
 				case "refused": return hasExactly(value, [...HEAD, "outcome", "refusal"]) && isRefusalRecord(value.refusal) ? value as unknown as EndMessage : undefined;
 				case "failed":
 					return hasExactly(value, [...HEAD, "outcome", "reason", "agpCode"])
-						&& (value.reason === "operation-threw" || value.reason === "answer-not-sendable")
+						&& (value.reason === "operation-failed" || value.reason === "answer-not-sendable")
 						&& (value.agpCode === null || typeof value.agpCode === "string")
 						? value as unknown as EndMessage : undefined;
 				default: return undefined;

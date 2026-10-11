@@ -5,7 +5,7 @@
  */
 import type { CallEnding } from "../call-types.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { checkAtBound, checkNotDelivered, inCase, untilEndedPumping } from "./suite-support.js";
+import { checkAtBound, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 export const notDeliveredCases: readonly SuiteCase[] = [
@@ -56,10 +56,8 @@ export const notDeliveredCases: readonly SuiteCase[] = [
 		run: (h) => inCase(h, {}, async (c) => {
 			const first = watch(c.call({ operation: "silent", bound: 100 }));
 			await until(() => c.a.runs.length === 1, "the first attempt runs");
-			c.hooks.advanceCallClock(100);
-			await until(first.settled, "the first attempt's ending");
-			const one = first.value() as CallEnding;
-			checkAtBound(one, h, null, "the first attempt");
+			const one = await runOutBound(c, first, 100, { ending: "the first attempt's ending" }) as CallEnding;
+			checkAtBound(one, null, "the first attempt");
 			await c.a.host.close();
 			await until(() => !c.hooks.routeVisible(c.a.nodeId, "fixture/silent"), "the route withdrawn");
 			const two = await untilEndedPumping(c, watch(c.call({ operation: "silent", invocation: one.invocation, repeat: true })), "the repeated attempt");

@@ -5,7 +5,7 @@
 import type { CallEnding } from "../call-types.js";
 import { isAttemptId, isInvocationId } from "../names.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { checkAtBound, checkNotDelivered, inCase, untilEndedPumping } from "./suite-support.js";
+import { checkAtBound, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 /** An array nested `levels` deep around 0. */
@@ -117,12 +117,8 @@ export const honestCallEndingCases: readonly SuiteCase[] = [
 			const release = c.hooks.holdExecutor(c.session.callerNodeId);
 			const call = watch(c.call({ operation: "which", bound: 100 }));
 			await settle();
-			c.hooks.advanceCallClock(99);
-			await settle();
-			check(!call.settled(), "the call waits until its bound");
-			c.hooks.advanceCallClock(1);
-			await until(call.settled, "the ending at the bound");
-			checkAtBound(call.value(), h, null, "the bound, before the send settled");
+			await runOutBound(c, call, 100, { waits: "the call waits until its bound", ending: "the ending at the bound" });
+			checkAtBound(call.value(), null, "the bound, before the send settled");
 			const ending = call.value();
 			c.hooks.advanceAgpClock(100);
 			await release();
@@ -157,10 +153,9 @@ export const honestCallEndingCases: readonly SuiteCase[] = [
 			await until(() => c.a.runs.length === 1, "the operation runs");
 			await settle();
 			check(!call.settled(), "nothing ends the call before its bound");
-			c.hooks.advanceCallClock(1000);
-			await until(call.settled, "the ending at the bound");
+			await runOutBound(c, call, 1000, { ending: "the ending at the bound" });
 			const report = c.hooks.reports().at(-1) ?? null;
-			checkAtBound(call.value(), h, report === "failed" ? null : report, "an admitted send whose signal and deadline passed afterwards");
+			checkAtBound(call.value(), report === "failed" ? null : report, "an admitted send whose signal and deadline passed afterwards");
 		}),
 	},
 ];

@@ -40,8 +40,8 @@ test("EM11's example request reads as a request; each kind of end reads; the wri
 	assert.deepEqual(readMessage(example), example);
 	assert.deepEqual(writeRequest(address, {}), example);
 	assert.deepEqual(writeEnd(address, { outcome: "refused", refusal }), { operationCall: 1, type: "end", ...address, outcome: "refused", refusal });
-	assert.deepEqual(writeEnd(address, { outcome: "failed", reason: "operation-threw", agpCode: null }), { operationCall: 1, type: "end", ...address, outcome: "failed", reason: "operation-threw", agpCode: null });
-	for (const content of [{ outcome: "refused", refusal }, { outcome: "failed", reason: "answer-not-sendable", agpCode: "MESSAGE_TOO_LARGE" }, { outcome: "answered", answer: null }]) {
+	assert.deepEqual(writeEnd(address, { outcome: "failed", reason: "operation-failed", agpCode: null }), { operationCall: 1, type: "end", ...address, outcome: "failed", reason: "operation-failed", agpCode: null });
+	for (const content of [{ outcome: "refused", refusal }, { outcome: "failed", reason: "operation-failed", agpCode: null }, { outcome: "failed", reason: "answer-not-sendable", agpCode: "MESSAGE_TOO_LARGE" }, { outcome: "answered", answer: null }]) {
 		assert.ok(readMessage(writeEnd(address, content)), content.outcome);
 	}
 });
@@ -57,8 +57,10 @@ test("a message breaking the form in any field is not read", () => {
 		{ ...request, attempt: "1791540000000-3f9a0c1d2b4e5f60" }, { ...request, input: Number.NaN },
 		without(end, "answer"), { ...end, outcome: "done" }, { ...end, refusal },
 		writeEnd(address, { outcome: "refused", refusal: { ...refusal, extra: 1 } }), writeEnd(address, { outcome: "refused", refusal: without(refusal, "fix") }),
-		writeEnd(address, { outcome: "failed", reason: "crashed", agpCode: null }), writeEnd(address, { outcome: "failed", reason: "operation-threw", agpCode: 7 }),
-		without(writeEnd(address, { outcome: "failed", reason: "operation-threw", agpCode: null }), "agpCode"),
+		writeEnd(address, { outcome: "failed", reason: "crashed", agpCode: null }), writeEnd(address, { outcome: "failed", reason: "operation-failed", agpCode: 7 }),
+		without(writeEnd(address, { outcome: "failed", reason: "operation-failed", agpCode: null }), "agpCode"),
+		// EM11 renamed the failed reason operation-failed; the earlier name is no longer the format's.
+		writeEnd(address, { outcome: "failed", reason: "operation-threw", agpCode: null }),
 		writePart(address, 0, 1), writePart(address, 1.5, 1), without(writePart(address, 1, 1), "sequence"),
 	];
 	for (const message of broken) assert.equal(readMessage(message), undefined, JSON.stringify(message));

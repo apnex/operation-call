@@ -5,8 +5,8 @@
 // request as it arrives, before anything else is done with it, giving it AGP's delivery context; the
 // operation receives that answer as its evidence, and AGP's delivery context as AGP gave it. Cases: the
 // order of asking, for a request that runs, one that misfits and one that is malformed; the context and the
-// answer unchanged; no function, giving null; a function that throws, ending the invocation failed with the
-// operation never run; and a function answering asynchronously.
+// answer unchanged; no function, giving null; a function that throws or whose promise rejects, ending the
+// invocation failed with operation-failed and the operation never run; and a function answering asynchronously.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createOperationHost } from "@apnex/operation-call";
@@ -67,7 +67,7 @@ test("with no evidence function, the operation's evidence is null and it still r
 	assert.equal(context.delivery.correlationId, ATTEMPT);
 });
 
-test("an evidence function that throws ends the invocation failed with operation-threw, and the operation never runs", async (t) => {
+test("an evidence function that throws ends the invocation failed with operation-failed, and the operation never runs", async (t) => {
 	let ran = false;
 	const raw = await openRaw(t, {
 		hostOptions: { evidence: () => { throw new Error("no record"); } },
@@ -76,7 +76,20 @@ test("an evidence function that throws ends the invocation failed with operation
 	});
 	await raw.send("svc/op", request("op"));
 	await raw.repliesReach(1);
-	assert.deepEqual([raw.replies[0].payload.outcome, raw.replies[0].payload.reason, raw.replies[0].payload.agpCode], ["failed", "operation-threw", null]);
+	assert.deepEqual([raw.replies[0].payload.outcome, raw.replies[0].payload.reason, raw.replies[0].payload.agpCode], ["failed", "operation-failed", null]);
+	assert.equal(ran, false);
+});
+
+test("an evidence function whose promise rejects likewise ends the invocation failed with operation-failed, and the operation never runs", async (t) => {
+	let ran = false;
+	const raw = await openRaw(t, {
+		hostOptions: { evidence: async () => { throw new Error("no record"); } },
+		declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, () => { ran = true; return { outcome: "answered", answer: 1 }; }),
+		endpoints: ["svc/op"],
+	});
+	await raw.send("svc/op", request("op"));
+	await raw.repliesReach(1);
+	assert.deepEqual([raw.replies[0].payload.outcome, raw.replies[0].payload.reason, raw.replies[0].payload.agpCode], ["failed", "operation-failed", null]);
 	assert.equal(ran, false);
 });
 

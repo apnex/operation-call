@@ -12,7 +12,7 @@ import type { CallEnding, CallRequest } from "../call-types.js";
 import { createOperationHost, type OperationContext, type OperationHandler, type OperationHost } from "../host.js";
 import type { JsonInput, JsonValue } from "../json-value.js";
 import type { RefusalRecord } from "../refusal.js";
-import { check, latch, same, turn, until, watch, type Latch, type Watched } from "./suite-check.js";
+import { check, latch, same, settle, turn, until, watch, type Latch, type Watched } from "./suite-check.js";
 import type { CallerSuiteHarness, CallerSuiteHooks, CallerSuiteOpenOptions, CallerSuiteSession } from "./suite-types.js";
 
 /** The name the fixture hosts serve under. */
@@ -149,16 +149,62 @@ export function discardedCount(c: CaseContext): number | undefined {
 	return typeof counter === "function" ? counter.call(c.session.caller) : undefined;
 }
 
-/** Checks an ending decided at the bound: unknown, `bound-passed`, no AGP code, the delivery report given. */
-export function checkAtBound(ending: CallEnding | undefined, harness: CallerSuiteHarness, deliveryReport: "delivered" | "unknown" | null, what: string): void {
+/**
+ * The hop allowance for a call of `bound` milliseconds (zorg's D45; operation-proxy's PX5): the harness's,
+ * or half the bound if that is less, rounded down; 0 for a direct caller.
+ */
+export function hopAllowance(harness: CallerSuiteHarness, bound: number): number {
+	return Math.min(harness.hopAllowanceMs, Math.floor(bound / 2));
+}
+
+/** What `runOutBound` says when a check fails. */
+export interface RunOutBoundWords {
+	/** When given, nothing may have ended 1 ms short of the allowance's edge; this names that check. */
+	readonly waits?: string;
+	/** Names the wait for the ending. */
+	readonly ending: string;
+}
+
+/**
+ * Runs out the bound of a call invoked with no time yet passed on the call bound's clock, and returns its
+ * ending, for the case to check with `checkAtBound`. The clock is advanced to the allowance's edge - the
+ * bound less the hop allowance, which for a direct caller is the bound itself - checking first, when
+ * `words.waits` is given, that nothing ended 1 ms short of it. The case then waits, on the ending itself and
+ * never on wall-clock time, for the caller to end the call; across a hop, that is the hop carrying the
+ * ending its far side reached at the edge. Only then is the clock advanced the rest of the way to the
+ * bound, and the ending must stay as it was. With an allowance of 0 this is exactly what a case did for a
+ * direct caller before the allowance existed.
+ */
+export async function runOutBound(c: CaseContext, call: Watched<CallEnding>, bound: number, words: RunOutBoundWords): Promise<CallEnding | undefined> {
+	const allowance = hopAllowance(c.harness, bound);
+	const edge = bound - allowance;
+	if (words.waits !== undefined) {
+		c.hooks.advanceCallClock(edge - 1);
+		await settle();
+		check(!call.settled(), allowance === 0 ? words.waits : `${words.waits}, short of the allowance's edge`);
+		c.hooks.advanceCallClock(1);
+	} else {
+		c.hooks.advanceCallClock(edge);
+	}
+	await until(call.settled, allowance === 0 ? words.ending : `${words.ending}, carried across the hop at the allowance's edge`);
+	if (allowance > 0) {
+		const ending = call.value();
+		c.hooks.advanceCallClock(allowance);
+		await settle();
+		same(call.count(), 1, `${words.ending}: one ending, the caller's own bound passing after it`);
+		check(call.value() === ending, `${words.ending}: the caller's own bound passing changes nothing`);
+	}
+	return call.value();
+}
+
+/**
+ * Checks an ending decided at the bound: unknown, `bound-passed`, no AGP code, the delivery report given.
+ * Across a hop the same holds (zorg's D45): the suite never accepts `hop-stalled`.
+ */
+export function checkAtBound(ending: CallEnding | undefined, deliveryReport: "delivered" | "unknown" | null, what: string): void {
 	check(ending !== undefined, `${what}: an ending`);
 	same(ending.ending, "unknown", `${what}: the ending`);
 	if (ending.ending !== "unknown") return;
-	if (harness.hopAtBound === true && ending.reason === "hop-stalled" as never) {
-		same(ending.agpCode, null, `${what}: no AGP code across the hop`);
-		same(ending.deliveryReport, null, `${what}: no delivery report across the hop`);
-		return;
-	}
 	same(ending.reason, "bound-passed", `${what}: the reason`);
 	same(ending.agpCode, null, `${what}: no AGP code`);
 	same(ending.deliveryReport, deliveryReport, `${what}: the last delivery report`);

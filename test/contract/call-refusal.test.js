@@ -71,7 +71,7 @@ test("a request breaking EM11's form, or naming another operation than its endpo
 	assert.equal(runs, 0, "no operation ran for any of them");
 });
 
-test("an operation's refusal that is not in EM9's form ends the invocation failed with operation-threw, never as a refusal", async (t) => {
+test("an operation's refusal that is not in EM9's form ends the invocation failed with operation-failed, never as a refusal", async (t) => {
 	const bad = [
 		{ part: "x", code: "y", what: "w", why: "w", fix: "f" },
 		{ part: "x", code: "y", what: "w", why: "w", fix: "f", details: {}, extra: 1 },
@@ -82,7 +82,7 @@ test("an operation's refusal that is not in EM9's form ends the invocation faile
 	const raw = await openRaw(t, { declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, (input) => ({ outcome: "refused", refusal: bad[input] })), endpoints: ["svc/op"] });
 	for (let i = 0; i < bad.length; i++) await raw.send("svc/op", request("op", i, { attempt: `${INVOCATION}.0000000${i}` }), `${INVOCATION}.0000000${i}`);
 	await raw.repliesReach(bad.length);
-	for (const { payload } of raw.replies) assert.deepEqual(payload, end("failed", { reason: "operation-threw", agpCode: null }, payload.attempt));
+	for (const { payload } of raw.replies) assert.deepEqual(payload, end("failed", { reason: "operation-failed", agpCode: null }, payload.attempt));
 });
 
 test("a refusal whose misfits exceed what AGP carries ends the call unknown with answer-not-sendable and AGP's code, the named limit of the first version", async (t) => {

@@ -7,7 +7,11 @@
  *
  * operation-call's own contract tests run it directly against its own caller; operation-proxy runs it
  * against its client half, through its proxy, so the caller is any implementation of the caller interface.
- * Nothing here is particular to one runtime (zorg's D31).
+ * The harness states its hop allowance (zorg's D45): 0 for a direct caller, and for a caller across a hop
+ * the allowance by which its far side's call ends sooner, so a case whose call ends at its bound takes the
+ * ending the hop carries from the allowance's edge, `unknown` with `bound-passed` and the call layer's
+ * delivery report, and never `hop-stalled`; operation-proxy adds its own case of a hop held past the
+ * allowance. Nothing here is particular to one runtime (zorg's D31).
  */
 import { callerChosenBoundCases, requestCorrelationCases } from "./suite/bound-and-correlation-cases.js";
 import { channelLossCases } from "./suite/channel-loss-cases.js";
@@ -41,6 +45,8 @@ export const callerSuiteRows = Object.freeze({
  * returns how many were registered.
  */
 export function registerCallerSuite(register: SuiteRegister, harness: CallerSuiteHarness, rows: readonly string[] = callerSuiteRows.rows): number {
+	if (harness === null || typeof harness !== "object" || typeof harness.open !== "function") throw new TypeError("the caller suite needs a harness: { open, hopAllowanceMs }");
+	if (!Number.isInteger(harness.hopAllowanceMs) || harness.hopAllowanceMs < 0) throw new RangeError("a harness states its hop allowance as a whole number of milliseconds from 0, 0 for a direct caller");
 	let count = 0;
 	for (const row of rows) {
 		const cases = CASES[row];

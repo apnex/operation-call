@@ -73,11 +73,17 @@ export interface CallerSuiteOpenOptions {
 export interface CallerSuiteHarness {
 	open(options?: CallerSuiteOpenOptions): Promise<CallerSuiteSession>;
 	/**
-	 * True for a caller across a hop, such as operation-proxy's client half: an ending the suite expects at
-	 * the bound may instead be `unknown` with reason `hop-stalled`, `agpCode` null and `deliveryReport` null
-	 * (operation-proxy's PX6, PX10).
+	 * The hop allowance, a whole number of milliseconds: 0 for a direct caller, such as operation-call's own;
+	 * for a caller across a hop, such as operation-proxy's client half, the allowance by which the call it
+	 * makes on the far side of the hop is bound to end before the caller's own bound (zorg's D45;
+	 * operation-proxy's PX5, PX9). For a call of a given bound the allowance is this, or half the bound if
+	 * that is less, rounded down. A case whose call ends at its bound advances the call bound's clock to the
+	 * allowance's edge, lets the hop carry the ending, and accepts `unknown` with `bound-passed` and the call
+	 * layer's delivery report up to the allowance early; it never accepts `hop-stalled`, which only a hop
+	 * holding the ending past the allowance gives (operation-proxy's PX6, PX10). With 0, each such case runs
+	 * exactly as for a direct caller.
 	 */
-	readonly hopAtBound?: boolean;
+	readonly hopAllowanceMs: number;
 }
 
 /** How the suite registers a case with the consumer's test runner, as node:test's `test` does. */
