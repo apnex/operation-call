@@ -2,7 +2,7 @@
 
 Give every invocation of a named operation exactly one honest ending, within a bound its caller chose.
 
-**Status: built, awaiting certification of zorg's Delta 1, stage 4.**\
+**Status: built, and certified at zorg's Delta 1, stage 4, at `2e435a8`.**\
 Its contract tests run its caller contract suite against its own caller, and its host's cases, over AGP's production in-process carrier with AGP's injected clock and a separate clock for each call's bound.
 
 - `VISION.md` - why it exists, and what it will never be.
