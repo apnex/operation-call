@@ -6,12 +6,16 @@
  * identities it was given; `hold` waits until the case releases that run, then answers like `which` with
  * its input; `silent` never answers; `deeper` answers its input one level deeper; `sized` answers a string
  * of `input.bytes` characters; `refuses` refuses with the refusal record its input holds; `throws` throws;
- * `strict` declares an input shape of `{"n": integer}` and answers its input.
+ * `strict` declares an input shape of `{"n": integer}` and answers its input; `hold-refuses` waits like
+ * `hold`, then refuses with the refusal record its input holds; `busy` occupies its host's thread for
+ * `input.ms` milliseconds of real time before answering `input.ms`; `shaped` declares the input shape
+ * `SHAPED_INPUT` and answers its input.
  */
 import type { CallEnding, CallRequest } from "../call-types.js";
 import { createOperationHost, type OperationContext, type OperationHandler, type OperationHost } from "../host.js";
 import type { JsonInput, JsonValue } from "../json-value.js";
 import type { RefusalRecord } from "../refusal.js";
+import { systemCallClock } from "../system-ports.js";
 import { check, latch, same, settle, turn, until, watch, type Latch, type Watched } from "./suite-check.js";
 import type { CallerSuiteHarness, CallerSuiteHooks, CallerSuiteOpenOptions, CallerSuiteSession } from "./suite-types.js";
 
@@ -20,6 +24,24 @@ export const SERVICE = "fixture";
 
 /** The dialect every fixture shape declares. */
 const DIALECT = "urn:apnex:shape-check:dialect:1";
+
+/**
+ * The input shape `shaped` declares, which a description must return unchanged: names in an order other
+ * than code point order, a name outside ASCII, and an enum of an object whose names are out of order.
+ */
+export const SHAPED_INPUT = Object.freeze({
+	$schema: DIALECT,
+	type: "object",
+	properties: { "z\u00e9ta": { type: "string", maxLength: 3 }, alpha: { enum: [{ b: 1, a: [true, null] }, 2.5, "s"] } },
+	required: ["z\u00e9ta"],
+	additionalProperties: false,
+});
+
+/** The input shape every other fixture operation but `strict` declares. */
+export const ANY_INPUT = Object.freeze({ $schema: DIALECT });
+
+/** The input shape `strict` declares. */
+export const STRICT_INPUT = Object.freeze({ $schema: DIALECT, type: "object", required: ["n"], properties: { n: { type: "integer" } }, additionalProperties: false });
 
 /** One run of a fixture operation, as its host recorded it. */
 export interface Run {
@@ -55,7 +77,7 @@ export interface CaseContext {
 }
 
 /** Every fixture operation's name. */
-export const FIXTURE_OPERATIONS = ["echo", "which", "hold", "silent", "deeper", "sized", "refuses", "throws", "strict"] as const;
+export const FIXTURE_OPERATIONS = ["echo", "which", "hold", "silent", "deeper", "sized", "refuses", "throws", "strict", "hold-refuses", "busy", "shaped"] as const;
 
 /** Opens a fixture host on one node, declaring every fixture operation. */
 async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"][number]["node"]): Promise<FixtureHost> {
@@ -67,7 +89,7 @@ async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"]
 		runs.push({ operation: c.operation, input, invocation: c.invocation, attempt: c.attempt, correlationId: c.delivery.correlationId, origin: c.delivery.source.originNodeId });
 	};
 	const who = (c: OperationContext): JsonValue => ({ host: nodeId, invocation: c.invocation, attempt: c.attempt });
-	const any = { $schema: DIALECT };
+	const any = ANY_INPUT;
 	const handlers: { [name: string]: [JsonInput, OperationHandler] } = {
 		echo: [any, (input) => ({ outcome: "answered", answer: input })],
 		which: [any, (_input, c) => ({ outcome: "answered", answer: who(c) })],
@@ -82,7 +104,20 @@ async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"]
 		sized: [any, (input) => ({ outcome: "answered", answer: "x".repeat((input as { bytes: number }).bytes) })],
 		refuses: [any, (input) => ({ outcome: "refused", refusal: input as unknown as RefusalRecord })],
 		throws: [any, () => { throw new Error("the fixture operation failed"); }],
-		strict: [{ $schema: DIALECT, type: "object", required: ["n"], properties: { n: { type: "integer" } }, additionalProperties: false }, (input) => ({ outcome: "answered", answer: input })],
+		strict: [STRICT_INPUT, (input) => ({ outcome: "answered", answer: input })],
+		"hold-refuses": [any, async (input) => {
+			const held = latch();
+			holds.push(held);
+			await held.wait;
+			return { outcome: "refused", refusal: input as unknown as RefusalRecord };
+		}],
+		busy: [any, (input) => {
+			const ms = (input as { ms: number }).ms;
+			const stop = systemCallClock.now() + ms;
+			while (systemCallClock.now() < stop) { /* occupies the host's thread, as a slow operation does */ }
+			return { outcome: "answered", answer: ms };
+		}],
+		shaped: [SHAPED_INPUT, (input) => ({ outcome: "answered", answer: input })],
 	};
 	for (const name of FIXTURE_OPERATIONS) {
 		const [input, handler] = handlers[name] as [JsonInput, OperationHandler];
@@ -155,6 +190,49 @@ export function discardedCount(c: CaseContext): number | undefined {
  */
 export function hopAllowance(harness: CallerSuiteHarness, bound: number): number {
 	return Math.min(harness.hopAllowanceMs, Math.floor(bound / 2));
+}
+
+/**
+ * The bound the call beneath a hop is given for a call of `bound` milliseconds (zorg's D46; operation-proxy's
+ * PX5): the bound less the hop allowance, rounded down to a whole millisecond; the bound itself for a direct
+ * caller. A case that depends on the time the call beneath is given - its admission deadline among them -
+ * computes it so.
+ */
+export function beneathBound(harness: CallerSuiteHarness, bound: number): number {
+	return Math.floor(bound - hopAllowance(harness, bound));
+}
+
+/** Invokes the caller under test with exactly the call given, a throw from invoke itself taken as a rejection. */
+export function invokeExactly(c: CaseContext, call: unknown): Promise<CallEnding> {
+	return new Promise<CallEnding>((resolve) => resolve(c.session.caller.invoke(call as CallRequest)));
+}
+
+/**
+ * Checks that an ending is one frozen object holding exactly the fields EM12 names for its kind, the
+ * address included, with no field beyond them (zorg's target, EM12).
+ */
+export function checkEndingFields(ending: CallEnding | undefined, what: string): void {
+	check(ending !== undefined && ending !== null && typeof ending === "object", `${what}: an ending`);
+	const fields: { [kind: string]: readonly string[] } = {
+		answered: ["answer"],
+		refused: ["refusal"],
+		"not-delivered": ["agpCode", "earlierAttemptsUncertain", "proxyCode"],
+		unknown: ["agpCode", "deliveryReport", "reason"],
+	};
+	const own = fields[ending.ending];
+	check(own !== undefined, `${what}: an ending of a kind EM12 names, not ${String(ending.ending)}`);
+	same(Object.keys(ending).sort(), ["attempt", "ending", "invocation", "operation", ...own].sort(), `${what}: exactly the fields of a ${ending.ending} ending`);
+	check(Object.isFrozen(ending), `${what}: the ending is frozen`);
+	check(typeof ending.invocation === "string" && typeof ending.attempt === "string" && typeof ending.operation === "string", `${what}: the ending names its invocation, attempt and operation`);
+	if (ending.ending === "not-delivered") {
+		check(typeof ending.agpCode === "string", `${what}: AGP's code`);
+		same(ending.proxyCode, null, `${what}: no proxy code from the call layer`);
+		check(typeof ending.earlierAttemptsUncertain === "boolean", `${what}: earlierAttemptsUncertain is true or false`);
+	}
+	if (ending.ending === "unknown") {
+		check(ending.agpCode === null || typeof ending.agpCode === "string", `${what}: AGP's code or null`);
+		check(ending.deliveryReport === null || ending.deliveryReport === "delivered" || ending.deliveryReport === "unknown", `${what}: the last delivery report or null`);
+	}
 }
 
 /** What `runOutBound` says when a check fails. */

@@ -5,7 +5,7 @@
 import type { CallEnding } from "../call-types.js";
 import { isAttemptId, isInvocationId } from "../names.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { checkAtBound, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
+import { beneathBound, checkAtBound, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 /** An array nested `levels` deep around 0. */
@@ -95,11 +95,15 @@ export const honestCallEndingCases: readonly SuiteCase[] = [
 	{
 		name: "with two clocks, AGP's admission deadline passing first ends not delivered with TIMEOUT, the call's bound passing later changes nothing, and the request never arrives",
 		run: (h) => inCase(h, {}, async (c) => {
+			const admission = beneathBound(c.harness, 100);
 			const release = c.hooks.holdExecutor(c.session.callerNodeId);
 			const call = watch(c.call({ operation: "which", bound: 100 }));
 			await settle();
 			check(!call.settled(), "the send waits behind the held executor");
-			c.hooks.advanceAgpClock(100);
+			c.hooks.advanceAgpClock(admission - 1);
+			await settle();
+			check(!call.settled(), "AGP's admission deadline, the time the call beneath is given, has not yet passed");
+			c.hooks.advanceAgpClock(1);
 			await until(call.settled, "AGP's refusal");
 			checkNotDelivered(call.value(), ["TIMEOUT"], false, "the admission deadline");
 			c.hooks.advanceCallClock(100);

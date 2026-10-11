@@ -6,14 +6,19 @@
 // 524288 bytes, in that order, depth measured before shape-check judges the shape; a refused declaration
 // exposes no endpoint and leaves the description as it was. Cases: each reason, its order, shapes of 20,
 // 21 and 5000 levels, a single shape too large to describe, two that fit alone but not together,
-// descriptions of exactly 524288 bytes and one more, and a remote description returning every declared
-// input shape unchanged.
+// descriptions of exactly 524288 bytes and one more. The caller suite's cases for this row, which a caller
+// observes, run directly against operation-call's own caller: a remote description returning every declared
+// input shape unchanged, in its declared order of names, from either host, and describe taking only an empty
+// object.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createNode } from "@agp/node";
 import { judgeShapeValue } from "@apnex/shape-check";
 import { createOperationHost } from "@apnex/operation-call";
-import { openTopology } from "../support/fixture.js";
+import { registerCallerSuite } from "@apnex/operation-call/caller-suite";
+import { directHarness } from "../support/fixture.js";
+
+registerCallerSuite((name, run) => test(name, { timeout: 30_000 }, run), directHarness, ["operation-descriptions"]);
 
 const D = "urn:apnex:shape-check:dialect:1";
 const ok = () => ({ outcome: "answered", answer: null });
@@ -116,25 +121,4 @@ test("descriptions of exactly 524288 bytes are declared, and of one byte more re
 	assert.deepEqual(endpoints(pair.node), ["svc/describe", "svc/one"]);
 	const alone = await freshHost();
 	assert.deepEqual(await alone.host.declare({ name: "two", input: enumShape(300000), answers: "whole" }, ok), { declared: true }, "the second shape fits alone");
-});
-
-test("a caller reads a remote description: every declared input shape unchanged, ordered by name, whole, and describe itself not listed", async (t) => {
-	const topology = await openTopology();
-	t.after(() => topology.close());
-	const opening = await createOperationHost(topology.hosts[0].node, { service: "svc" });
-	const shapes = {
-		zeta: { $schema: D, type: "object", properties: { "\u00e9": { type: "string", maxLength: 3 } }, required: ["\u00e9"], additionalProperties: false },
-		alpha: { $schema: D, enum: [{ b: 1, a: [true, null] }, 2.5, "s"] },
-		"Z-not-a-name": { $schema: D },
-		mid: { $schema: D, type: ["string", "null"], pattern: "^a" },
-	};
-	for (const [name, input] of Object.entries(shapes)) await opening.host.declare({ name, input, answers: "whole" }, ok);
-	await topology.hooks.ready("host-a", "svc/describe");
-	const ending = await topology.caller.invoke({ host: "host-a", service: "svc", operation: "describe", input: {}, bound: 1000 });
-	assert.equal(ending.ending, "answered");
-	assert.deepEqual(ending.answer, { service: "svc", operations: ["alpha", "mid", "zeta"].map((name) => ({ name, input: shapes[name], answers: "whole" })) });
-	assert.deepEqual(Object.keys(ending.answer.operations[2].input), Object.keys(shapes.zeta), "the shape unchanged, as declared");
-	const misfit = await topology.caller.invoke({ host: "host-a", service: "svc", operation: "describe", input: { any: 1 }, bound: 1000 });
-	assert.equal(misfit.ending, "refused");
-	assert.equal(misfit.refusal.code, "input-misfit", "describe takes only an empty object");
 });

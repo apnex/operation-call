@@ -4,9 +4,10 @@
 //
 // The caller suite's cases for this row run directly against operation-call's own caller: the identity's
 // form, given to the operation with the attempt; a repeat carrying the same identity under a new attempt.
-// Beside them, with an injected identity source: the identity is exactly the caller's wall-clock time in 13
-// digits, a hyphen and 16 random lowercase hexadecimal digits; each attempt adds a dot and 8 more, new for
-// every attempt; and an identity that is not as EM11 writes it is refused before anything is sent.
+// The suite also holds that an identity not as EM11 writes it throws a TypeError, with nothing sent. Beside
+// them, with an injected identity source: the identity is exactly the caller's wall-clock time in 13 digits,
+// a hyphen and 16 random lowercase hexadecimal digits; and each attempt adds a dot and 8 more, new for every
+// attempt.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCaller } from "@apnex/operation-call";
@@ -58,15 +59,6 @@ test("a repeat keeps the invocation identity given and makes a new attempt ident
 	assert.notEqual(one.attempt, two.attempt);
 	assert.ok(one.attempt.startsWith(`${invocation}.`) && two.attempt.startsWith(`${invocation}.`));
 	assert.deepEqual(node.sends.map((s) => s.payload.invocation), [invocation, invocation]);
-});
-
-test("an invocation identity not as EM11 writes it is refused before anything is sent", async () => {
-	const node = createFakeNode();
-	const caller = await createCaller({ node, clock: createCreepingClock(0) });
-	for (const invocation of ["", "1791540000000-ABCDEF0123456789", "179154000000-abcdef0123456789", "1791540000000-abcdef012345678", "1791540000000_abcdef0123456789", 17]) {
-		await assert.rejects(caller.invoke({ ...call, invocation }), TypeError, String(invocation));
-	}
-	assert.equal(node.sends.length, 0);
 });
 
 test("over AGP, the operation receives the invocation identity from the envelope, never from the input", async (t) => {

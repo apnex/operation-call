@@ -10,12 +10,22 @@
  */
 import type { IdentitySource } from "./names.js";
 
-/** A pending callback of a clock port, which can be cancelled. */
+/**
+ * A pending callback of a clock port, which can be cancelled. A caller cancels its bound's timer only after
+ * it has settled the ending it chose, so a cancel that throws changes no ending; a timer that runs anyway
+ * finds the invocation decided.
+ */
 export interface ClockTimer {
 	cancel(): void;
 }
 
-/** The clock a call's bound runs on. */
+/**
+ * The clock a call's bound runs on. The caller reads it as each invocation is entered, after preparing the
+ * request, and at every event it observes, so an event observed once the bound has passed loses to the bound
+ * even when the bound's own callback has not yet run (EM12). A reading or a schedule that throws before
+ * anything is sent rejects the invocation with that fault; once the request is sent, a reading that throws
+ * cannot show the bound passed, so the event observed decides.
+ */
 export interface CallClock {
 	/** Milliseconds that a change to the wall clock does not move. */
 	now(): number;

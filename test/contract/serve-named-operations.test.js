@@ -6,7 +6,9 @@
 // an operation that throws, rejects, or gives no valid result ending failed with operation-failed; an answer
 // that cannot cross AGP whole - not JSON, an unsafe integer, 31 levels - replaced by answer-not-sendable
 // with no AGP code; and an answer whose send AGP refuses replaced once by answer-not-sendable with AGP's
-// code, nothing sent when that fails too. Two hosts pinned apart are the suite's advertiser-instance-select.
+// code, nothing sent when that fails too; a getter or a proxy that throws on the result, or nested in its
+// refusal or answer, ending failed with operation-failed and no AGP code, before the caller's bound, a result
+// read once. Two hosts pinned apart are the suite's advertiser-instance-select.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createOperationHost } from "@apnex/operation-call";
@@ -114,4 +116,63 @@ test("an answer whose send AGP refuses is replaced, once, by answer-not-sendable
 	await host.declare({ name: "op", input: ANY, answers: "whole" }, () => { throw new Error("x"); });
 	await node.exposed.get("svc/op")(request("op"), { delivery, signal: new AbortController().signal });
 	assert.equal(node.sent.length, 1, "a failed end that AGP refuses is not replaced");
+});
+
+// Reading what an operation returned is inside its failure boundary (EM11; F4 of the first verification):
+// a getter or a proxy that throws, on the result or nested in its refusal or answer, gives one
+// operation-failed end, with no AGP code, before the caller's bound; what is read is read once.
+const thrower = () => { throw new Error("a malformed result"); };
+const MALFORMED_RESULTS = [
+	["a result whose outcome getter throws", () => ({ get outcome() { return thrower(); }, answer: null })],
+	["a result whose answer getter throws", () => ({ outcome: "answered", get answer() { return thrower(); } })],
+	["a proxy whose get trap throws", () => new Proxy({ outcome: "answered", answer: 1 }, { get: thrower })],
+	["a proxy whose ownKeys trap throws", () => new Proxy({ outcome: "answered", answer: 1 }, { ownKeys: thrower })],
+	["a result whose then getter throws", () => ({ outcome: "answered", answer: 1, get then() { return thrower(); } })],
+	["a refusal whose details getter throws", () => ({ outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", get details() { return thrower(); } } })],
+	["a refusal that is a proxy whose get trap throws", () => ({ outcome: "refused", refusal: new Proxy({ part: "p", code: "c", what: "w", why: "w", fix: "f", details: {} }, { get: thrower }) })],
+	["a refusal whose misfit record's getter throws", () => ({ outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", details: {}, misfits: [{ pointer: "", keyword: "type", expected: "string", get fit() { return thrower(); } }] } })],
+	["a refusal whose details hold a getter that throws", () => ({ outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", details: { get n() { return thrower(); } } } })],
+	["an answer holding a getter that throws", () => ({ outcome: "answered", answer: { list: [1, { get x() { return thrower(); } }] } })],
+];
+
+test("a getter or a proxy that throws on what an operation returned, or in its refusal or answer, gives exactly one operation-failed end with no AGP code", async (t) => {
+	const raw = await openRaw(t, { declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, (input) => MALFORMED_RESULTS[input][1]()), endpoints: ["svc/op"] });
+	for (let i = 0; i < MALFORMED_RESULTS.length; i++) {
+		const attempt = `${INVOCATION}.000001${String(i).padStart(2, "0")}`;
+		await raw.send("svc/op", request("op", i, { attempt }), attempt);
+	}
+	await raw.repliesReach(MALFORMED_RESULTS.length);
+	for (let i = 0; i < 50; i++) await turn();
+	assert.equal(raw.replies.length, MALFORMED_RESULTS.length, "exactly one end message for each request");
+	for (const { payload } of raw.replies) {
+		const i = Number(payload.attempt.slice(-2));
+		assert.deepEqual(payload, end({ outcome: "failed", reason: "operation-failed", agpCode: null }, payload.attempt), MALFORMED_RESULTS[i][0]);
+	}
+});
+
+test("a result read through getters is read once: what the host judges is what it sends", async (t) => {
+	let outcomeReads = 0;
+	let answerReads = 0;
+	const raw = await openRaw(t, { declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, () => ({
+		get outcome() { return ++outcomeReads === 1 ? "answered" : "refused"; },
+		get answer() { return ++answerReads === 1 ? { n: 1 } : { n: 9007199254740992 }; },
+	})), endpoints: ["svc/op"] });
+	await raw.send("svc/op", request("op", 0));
+	await raw.repliesReach(1);
+	assert.deepEqual(raw.replies[0].payload, end({ outcome: "answered", answer: { n: 1 } }));
+	assert.deepEqual([outcomeReads, answerReads], [1, 1]);
+});
+
+test("over AGP, a result whose inspection throws ends the caller's invocation unknown with operation-failed and no AGP code, before its bound", async (t) => {
+	const topology = await openTopology();
+	t.after(() => topology.close());
+	const { host } = await createOperationHost(topology.hosts[0].node, { service: "svc" });
+	await host.declare({ name: "op", input: ANY, answers: "whole" }, (input) => MALFORMED_RESULTS[input][1]());
+	await topology.hooks.ready("host-a", "svc/op");
+	for (let i = 0; i < MALFORMED_RESULTS.length; i++) {
+		// The call clock is never advanced: an ending at the bound could not come.
+		const ending = await topology.caller.invoke({ host: "host-a", service: "svc", operation: "op", input: i, bound: 100 });
+		assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], MALFORMED_RESULTS[i][0]);
+	}
+	assert.equal(topology.callClock.pending(), 0, "every bound's timer was cancelled by an ending before it");
 });

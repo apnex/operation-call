@@ -9,17 +9,18 @@
 // the suite refuses: with an allowance of 50 because no ending arrives at the edge, and with an allowance of
 // 0 because the ending at the bound is `hop-stalled`. The suite never accepts `hop-stalled`.
 //
-// One case is not run through the hop: "AGP is given the time left on the bound as the send's admission
-// deadline". Across a hop, AGP's admission deadline is the time left on the far side's bound, the
-// allowance sooner, so that case's check at 99 ms of AGP's clock does not hold there; its call ends at
-// AGP's deadline, not at its bound, so D45 does not reach it. It runs directly in caller-chosen-bound.test.js.
+// Every case of the suite runs through the hop, none excluded (zorg's target, EM12): a case that depends on
+// the time the call beneath is given - AGP's admission deadline, and when an event falls after the bound -
+// computes it as the bound less the allowance, by PX5's rule (zorg's D46), so the admission-deadline case
+// expects AGP's refusal at 50 ms of AGP's clock across this hop and at 100 ms directly. The same case run
+// with an allowance that does not match the hop is refused, so the allowance is read, not ignored.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { callerSuiteRows, registerCallerSuite } from "@apnex/operation-call/caller-suite";
 import { fakeHopHarness } from "../support/fake-hop.js";
 import { directHarness } from "../support/fixture.js";
 
-const ADMISSION_CASE = "caller-chosen-bound: AGP is given the time left on the bound as the send's admission deadline";
+const ADMISSION_CASE = "caller-chosen-bound: AGP is given the time left on the bound as the send's admission deadline, the bound less the hop allowance across a hop";
 
 /** Each case of the suite, by its registered name, run against a harness. */
 function suiteCases(harness, rows = callerSuiteRows.rows) {
@@ -28,11 +29,23 @@ function suiteCases(harness, rows = callerSuiteRows.rows) {
 	return cases;
 }
 
-// Every case but the admission-deadline one, through a working hop with an allowance of 50 ms.
-for (const [name, run] of suiteCases(fakeHopHarness({ allowanceMs: 50 }))) {
-	if (name === ADMISSION_CASE) continue;
-	test(`through a hop with an allowance of 50 ms: ${name}`, { timeout: 30_000 }, run);
-}
+// Every case, through a working hop with an allowance of 50 ms.
+const throughHop = suiteCases(fakeHopHarness({ allowanceMs: 50 }));
+for (const [name, run] of throughHop) test(`through a hop with an allowance of 50 ms: ${name}`, { timeout: 30_000 }, run);
+
+test("every case the suite registers directly is registered through the hop, none excluded", () => {
+	assert.deepEqual([...throughHop.keys()], [...suiteCases(directHarness).keys()]);
+	assert.ok(throughHop.size > 50);
+});
+
+test("a harness stating an allowance its hop does not keep fails the cases that depend on the time the call beneath is given", { timeout: 60_000 }, async () => {
+	// The hop keeps 50 ms back; a harness claiming 0 expects AGP's admission deadline at 100 ms, not 50.
+	const misstated = { ...fakeHopHarness({ allowanceMs: 50 }), hopAllowanceMs: 0 };
+	await assert.rejects(suiteCases(misstated).get(ADMISSION_CASE)(), /the admission deadline has not passed after 99 ms/);
+	// A direct caller judged as if across a hop of 50 ms expects the refusal at 50 ms, which comes at 100.
+	const direct = { ...directHarness, hopAllowanceMs: 50 };
+	await assert.rejects(suiteCases(direct).get(ADMISSION_CASE)(), /AGP's refusal at 50 ms/);
+});
 
 /** The cases whose call ends at its bound, one from each row that has them. */
 const AT_BOUND = [

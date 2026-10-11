@@ -31,8 +31,8 @@
     },
     "./caller-suite": {
       "exports": {
-        "registerCallerSuite": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select"] },
-        "callerSuiteRows": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select"] }
+        "registerCallerSuite": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "operation-descriptions", "advertiser-instance-select"] },
+        "callerSuiteRows": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "operation-descriptions", "advertiser-instance-select"] }
       }
     }
   },

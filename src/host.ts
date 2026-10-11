@@ -9,7 +9,9 @@
  * identity, and discarded otherwise. Input that does not fit the declared shape is refused as `input-misfit`
  * with shape-check's misfit records unchanged, before the operation runs. The operation answers or refuses;
  * one that throws, or returns what is neither an answer nor a refusal in EM9's form, ends `failed` with
- * `operation-failed`, as does a request for which the evidence function fails. An answer that cannot cross AGP whole, or whose send
+ * `operation-failed`, as does a request for which the evidence function fails. Reading what the operation
+ * returned is inside that boundary: a getter or a proxy that throws on its result, or nested in its refusal
+ * or answer, ends it so too, and the result is read once, into the copy that is judged and sent. An answer that cannot cross AGP whole, or whose send
  * AGP refuses, is replaced by a `failed` end with `answer-not-sendable` and AGP's code, or null when the host
  * found it unsendable itself; when that cannot be sent either, nothing is sent. Every answer goes to the
  * request's source endpoint, pinned to its origin node, under the request's attempt identity.
@@ -17,7 +19,7 @@
 import type { AgpNode, EndpointBinding, EndpointName, JsonObject } from "@agp/node";
 import { prepareShapeDocument, type PreparedShape } from "@apnex/shape-check";
 import { checkDeclarationForm, describe, DESCRIBE_INPUT, hostRefusal, judgeDeclaration, nameDetails, type Description, type DescribedOperation, type HostRefusal, type OperationDeclaration } from "./declarations.js";
-import { copyJson, isJson, type JsonInput, type JsonValue } from "./json-value.js";
+import { copyJson, snapshotJson, type JsonInput, type JsonValue } from "./json-value.js";
 import { crossesAgp, readMessage, writeEnd, type EndContent, type MessageAddress } from "./message-format.js";
 import { DESCRIBE_OPERATION, invocationOfAttempt, isAttemptId, isName } from "./names.js";
 import { inputMisfit, isRefusalRecord, malformedRequest, type RefusalRecord } from "./refusal.js";
@@ -83,14 +85,27 @@ interface Served {
 	readonly handler: OperationHandler;
 }
 
-/** True when a value is exactly one of the two results an operation may give. */
-function isResult(value: unknown): value is OperationResult {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-	const v = value as { [name: string]: unknown };
-	const names = Object.keys(v);
-	if (v.outcome === "answered") return names.length === 2 && Object.hasOwn(v, "answer");
-	if (v.outcome === "refused") return names.length === 2 && isRefusalRecord(v.refusal);
-	return false;
+/**
+ * The end content for what an operation returned (EM11): its answer or its refusal, `operation-failed` for
+ * what is neither in EM9's form, and `answer-not-sendable` for an answer that is not JSON. Each property is
+ * read once and copied, and what is judged and sent is the copy. Reading a result is part of the operation:
+ * a getter or a proxy that throws throws from here, and the caller ends the invocation `operation-failed`.
+ */
+function resultContent(value: unknown): EndContent {
+	const failed: EndContent = { outcome: "failed", reason: "operation-failed", agpCode: null };
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return failed;
+	const names = Object.keys(value);
+	if (names.length !== 2) return failed;
+	const outcome = (value as { outcome?: unknown }).outcome;
+	if (outcome === "answered" && names.includes("answer")) {
+		const answer = snapshotJson((value as { answer?: unknown }).answer);
+		return answer === undefined ? { outcome: "failed", reason: "answer-not-sendable", agpCode: null } : { outcome: "answered", answer };
+	}
+	if (outcome === "refused" && names.includes("refusal")) {
+		const refusal = snapshotJson((value as { refusal?: unknown }).refusal);
+		return isRefusalRecord(refusal) ? { outcome: "refused", refusal } : failed;
+	}
+	return failed;
 }
 
 /** Opens a host under a name on an AGP node, exposing `<service>/describe`, or refuses an invalid name. */
@@ -147,16 +162,17 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		if (evidenceFailed) return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
 		const verdict = operation.prepared.judge(message.input);
 		if (verdict.verdict === "misfit") return reply(address, { outcome: "refused", refusal: inputMisfit(operation.name, verdict.misfits) }, delivery);
-		let result: unknown;
+		// Running the operation and reading what it returned are one failure boundary (EM11): whatever throws
+		// in either - the operation, a thenable, a getter or a proxy on its result or nested in its refusal -
+		// ends the invocation failed with operation-failed.
+		let content: EndContent;
 		try {
-			result = await operation.handler(message.input, Object.freeze({ service, operation: operation.name, invocation: message.invocation, attempt: message.attempt, delivery, evidence: evidenceAnswer, signal }));
+			const result: unknown = await operation.handler(message.input, Object.freeze({ service, operation: operation.name, invocation: message.invocation, attempt: message.attempt, delivery, evidence: evidenceAnswer, signal }));
+			content = resultContent(result);
 		} catch {
-			return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
+			content = { outcome: "failed", reason: "operation-failed", agpCode: null };
 		}
-		if (!isResult(result)) return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
-		if (result.outcome === "refused") return reply(address, { outcome: "refused", refusal: result.refusal }, delivery);
-		if (!isJson(result.answer)) return reply(address, { outcome: "failed", reason: "answer-not-sendable", agpCode: null }, delivery);
-		return reply(address, { outcome: "answered", answer: result.answer as JsonValue }, delivery);
+		return reply(address, content, delivery);
 	};
 
 	const expose = async (operation: Served): Promise<void> => {

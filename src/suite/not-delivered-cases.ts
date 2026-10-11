@@ -5,17 +5,21 @@
  */
 import type { CallEnding } from "../call-types.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { checkAtBound, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
+import { beneathBound, checkAtBound, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 export const notDeliveredCases: readonly SuiteCase[] = [
 	{
 		name: "a send whose admission deadline expires while queued is not delivered, with TIMEOUT, and after the queue is released and drained it has not arrived",
 		run: (h) => inCase(h, {}, async (c) => {
+			const admission = beneathBound(c.harness, 50);
 			const release = c.hooks.holdExecutor(c.session.callerNodeId);
 			const call = watch(c.call({ operation: "which", bound: 50 }));
 			await settle();
-			c.hooks.advanceAgpClock(50);
+			c.hooks.advanceAgpClock(admission - 1);
+			await settle();
+			check(!call.settled(), "the admission deadline, the time the call beneath is given, has not yet passed");
+			c.hooks.advanceAgpClock(1);
 			await until(call.settled, "AGP's refusal");
 			checkNotDelivered(call.value(), ["TIMEOUT"], false, "an admission deadline passed while queued");
 			await release();

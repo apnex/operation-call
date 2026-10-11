@@ -6,7 +6,7 @@
 import { ManualClock } from "@agp/core";
 import { createNode } from "@agp/node";
 import { createLoopbackFabric } from "@agp/transport-loopback";
-import { createCaller } from "@apnex/operation-call";
+import { createCaller, systemCallClock } from "@apnex/operation-call";
 import { createManualCallClock } from "./manual-call-clock.js";
 
 const REPLY = "operation-call/replies";
@@ -35,8 +35,10 @@ export function within(promise, what = "the ending", ms = 15_000) {
 /**
  * Builds the topology: `caller` dials `host-a` and `host-b`. Options: holdDeliveryReports, a host
  * disposition debounce of 60 s with no count bound; identities, the caller's identity source; callerOptions,
- * passed to createCaller; makeCaller false, to build no caller. The caller's invoke fails a call with no
- * ending within 15 s of real time, unless boundedInvoke is false, as the caller suite's harness needs.
+ * passed to createCaller; makeCaller false, to build no caller; realCallClock, to bound calls on the
+ * default system call clock instead of the manual one, whose hooks then refuse to move it. The caller's
+ * invoke fails a call with no ending within 15 s of real time, unless boundedInvoke is false, as the caller
+ * suite's harness needs.
  */
 export async function openTopology(options = {}) {
 	const fabricId = `operation-call-${++fabrics}`;
@@ -46,7 +48,12 @@ export async function openTopology(options = {}) {
 		maxQueuedBytesTotal: 268_435_456, maxPendingSendBytesTotal: 17_179_869_184,
 	} });
 	const agpClock = new ManualClock();
-	const callClock = createManualCallClock();
+	const manualClock = createManualCallClock();
+	const callClock = options.realCallClock ? systemCallClock : manualClock;
+	const manual = (what) => {
+		if (options.realCallClock) throw new Error(`${what}: this session bounds calls on the system call clock, which no hook moves`);
+		return manualClock;
+	};
 	const channels = new Map();
 	const port = (name, listen, targets) => {
 		const scoped = fabric.createTransport({ transportName: name, capabilities: { listen, connect: targets.length > 0 } }).createPort({
@@ -78,8 +85,11 @@ export async function openTopology(options = {}) {
 	const stream = callerNode.dispositions({ source: REPLY });
 	(async () => { for await (const d of stream) for (const o of d.outcomes) reports.push(o.kind); })();
 
-	// The caller's node as the caller sees it: its sends run an action, when one waits, once admitted.
+	// The caller's node as the caller sees it: every send it is asked for is counted; one can be made to fail
+	// with no AGP code, unsent; and a send runs an action, when one waits, once admitted.
 	const afterAdmission = [];
+	let requests = 0;
+	let failNext = false;
 	const sendingNode = {
 		nodeId: callerNode.nodeId,
 		operations: callerNode.operations,
@@ -90,6 +100,11 @@ export async function openTopology(options = {}) {
 		settled: (...a) => callerNode.settled(...a),
 		dispositions: (...a) => callerNode.dispositions(...a),
 		async send(...args) {
+			requests++;
+			if (failNext) {
+				failNext = false;
+				throw new Error("a send failed with no AGP code, by the fixture's hook");
+			}
 			const receipt = await callerNode.send(...args);
 			afterAdmission.shift()?.();
 			return receipt;
@@ -101,7 +116,8 @@ export async function openTopology(options = {}) {
 	const exportAcked = (node, endpoint, remote) => node.operations.routeExports().items.some((r) => r.endpoint === endpoint && r.remoteNodeId === remote && r.state === "acked");
 	const routeVisible = (hostId, endpoint) => callerNode.operations.routes().candidates.some((r) => r.endpoint === endpoint && r.originNodeId === hostId);
 	const hooks = {
-		advanceCallClock: (ms) => callClock.advance(ms),
+		advanceCallClock: (ms) => manual("advanceCallClock").advance(ms),
+		moveCallClock: (ms) => manual("moveCallClock").move(ms),
 		advanceAgpClock: (ms) => agpClock.advanceBy(ms),
 		holdExecutor(nodeId) {
 			const node = nodes.get(nodeId);
@@ -125,6 +141,8 @@ export async function openTopology(options = {}) {
 		routeVisible,
 		reports: () => [...reports],
 		afterNextAdmission: (action) => { afterAdmission.push(action); },
+		requests: () => requests,
+		failNextSend: () => { failNext = true; },
 	};
 
 	for (const h of hosts) await h.node.start();

@@ -8,15 +8,22 @@
  * for the send alone. The first of these events decides the ending, and nothing after it changes it: AGP
  * rejects the send, or reports the request failed (not delivered, with AGP's code); an end message is taken
  * (answered, refused, or unknown when it failed); or the bound passes (unknown). A report of delivered or
- * unknown ends nothing. Nothing here is particular to one runtime (zorg's D31).
+ * unknown ends nothing.
+ *
+ * An event happens when it occurs on the call's clock, not when a callback for it runs (EM12). The bound's
+ * absolute deadline is read as invoke is entered; after the synchronous preparation of the request, and at
+ * every observation of AGP or of the reply endpoint, the call's clock is read first, so a bound already
+ * passed decides the ending even when its own timer has not yet run. Choosing and settling the ending never
+ * depends on the clock port's cleanup, and every reaction the caller leaves running handles its own
+ * failure. Nothing here is particular to one runtime (zorg's D31).
  */
 import type { AgpNode, EndpointName, JsonObject } from "@agp/node";
-import type { CallEnding, CallRequest, DeliveryReport, OperationCaller, UnknownReason } from "./call-types.js";
+import type { CallEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
 import { isJson, type JsonValue } from "./json-value.js";
-import { readMessage, requestSendable, writeRequest } from "./message-format.js";
+import { readMessage, requestSendable, writeRequest, type EndMessage } from "./message-format.js";
 import { isInvocationId, isName, makeAttemptId, makeInvocationId, REPLY_ENDPOINT, type IdentitySource } from "./names.js";
 import { notSendable } from "./refusal.js";
-import { systemCallClock, systemIdentitySource, type CallClock } from "./system-ports.js";
+import { systemCallClock, systemIdentitySource, type CallClock, type ClockTimer } from "./system-ports.js";
 
 /** What AGP knows of the fate of one message it sent. */
 type MessageDisposition = NonNullable<ReturnType<AgpNode["disposition"]>>;
@@ -50,11 +57,11 @@ interface Waiting {
 	readonly operation: string;
 	readonly endpoint: string;
 	readonly host: string;
-	readonly decide: (ending: CallEnding) => void;
-	readonly unknown: (reason: UnknownReason, agpCode: string | null) => void;
+	/** Takes an end message the reply endpoint accepted for this attempt. */
+	readonly take: (message: EndMessage) => void;
 }
 
-/** AGP's code from a rejected send; AGP's failures crossing its SDK boundary always carry one. */
+/** AGP's code from a rejected send; a rejection carrying none is recorded as `INTERNAL` (EM12). */
 function agpCodeOf(error: unknown): string {
 	const code = (error as { code?: unknown } | null)?.code;
 	return typeof code === "string" && code.length > 0 ? code : "INTERNAL";
@@ -83,6 +90,13 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 	const waiting = new Map<string, Waiting>();
 	let discarded = 0;
 
+	/** Reads the call's clock; a reading that is not a finite number is a fault of the port. */
+	const read = (): number => {
+		const now = clock.now();
+		if (typeof now !== "number" || !Number.isFinite(now)) throw new TypeError(`the call clock read ${String(now)}, not a finite number of milliseconds`);
+		return now;
+	};
+
 	const binding = await node.expose(REPLY_ENDPOINT as EndpointName, async (payload, context) => {
 		const label = context.delivery.correlationId;
 		const attempt = label === undefined ? undefined : waiting.get(label);
@@ -95,65 +109,102 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 			discarded++;
 			return;
 		}
-		const address = { invocation: message.invocation, attempt: message.attempt, operation: message.operation };
-		if (message.outcome === "answered") attempt.decide({ ending: "answered", ...address, answer: message.answer });
-		else if (message.outcome === "refused") attempt.decide({ ending: "refused", ...address, refusal: message.refusal });
-		else attempt.unknown(message.reason, message.agpCode);
+		attempt.take(message);
 	});
 
 	const invoke = async (call: CallRequest): Promise<CallEnding> => {
+		// The bound starts when the caller invokes (EM12): its deadline is read before anything else is done.
+		const start = read();
 		checkCall(call);
-		const start = clock.now();
+		const deadline = start + call.bound;
 		const invocation = call.invocation ?? makeInvocationId(identities);
 		const attempt = makeAttemptId(identities, invocation);
 		const operation = call.operation;
 		const address = { invocation, attempt, operation };
 		const request = writeRequest(address, call.input as JsonValue);
-		if (!requestSendable(request)) return Object.freeze({ ending: "refused", ...address, refusal: notSendable() });
+		const sendable = requestSendable(request);
+		// Prepared: the call's clock is read first, so a bound that passed while preparing wins, and nothing is sent.
+		const left = deadline - read();
+		if (left <= 0) return Object.freeze({ ending: "unknown", ...address, reason: "bound-passed", agpCode: null, deliveryReport: null });
+		if (!sendable) return Object.freeze({ ending: "refused", ...address, refusal: notSendable() });
 		const repeat = call.repeat === true;
 		const endpoint = `${call.service}/${operation}`;
+
+		/** True once the bound has passed on the call's clock; a reading the port cannot give shows nothing passed. */
+		const boundPassed = (): boolean => {
+			try {
+				return read() >= deadline;
+			} catch {
+				return false;
+			}
+		};
 
 		return new Promise<CallEnding>((resolve) => {
 			let decided = false;
 			let lastReport: DeliveryReport | null = null;
-			const decide = (ending: CallEnding): void => {
-				if (decided) return;
+			let timer: ClockTimer | undefined;
+			/** Settles the chosen ending; cancelling the bound's timer comes after, and its failure changes nothing. */
+			const settle = (ending: CallEnding): void => {
 				decided = true;
-				timer.cancel();
 				waiting.delete(attempt);
 				resolve(Object.freeze(ending));
+				if (timer === undefined) return;
+				try {
+					timer.cancel();
+				} catch {
+					// The ending is settled; a timer that still runs finds the invocation decided.
+				}
 			};
-			const unknown = (reason: UnknownReason, agpCode: string | null): void =>
-				decide({ ending: "unknown", ...address, reason, agpCode, deliveryReport: lastReport });
-			const notDelivered = (agpCode: string): void =>
-				decide({ ending: "not-delivered", ...address, agpCode, proxyCode: null, earlierAttemptsUncertain: repeat });
+			const atBound = (): void => settle({ ending: "unknown", ...address, reason: "bound-passed", agpCode: null, deliveryReport: lastReport });
+			/** An event observed now: when the bound has already passed on the call's clock, the bound came first. */
+			const observed = (ending: () => CallEnding): void => {
+				if (decided) return;
+				if (boundPassed()) atBound();
+				else settle(ending());
+			};
+			const notDelivered = (agpCode: string): CallEnding =>
+				({ ending: "not-delivered", ...address, agpCode, proxyCode: null, earlierAttemptsUncertain: repeat });
 			const observe = (disposition: MessageDisposition | undefined): void => {
 				if (decided || disposition === undefined) return;
+				if (boundPassed()) return atBound();
 				for (const outcome of disposition.outcomes) {
-					if (outcome.kind === "failed") return notDelivered(outcome.code);
+					if (outcome.kind === "failed") return settle(notDelivered(outcome.code));
 					lastReport = outcome.kind;
 				}
 			};
-			const timer = clock.schedule(Math.max(0, call.bound - (clock.now() - start)), () => unknown("bound-passed", null));
-			waiting.set(attempt, { invocation, operation, endpoint, host: call.host, decide, unknown });
-			const left = Math.max(1, Math.ceil(call.bound - (clock.now() - start)));
+			const take = (message: EndMessage): void => observed(() => {
+				const ending = { invocation: message.invocation, attempt: message.attempt, operation: message.operation };
+				if (message.outcome === "answered") return { ending: "answered", ...ending, answer: message.answer };
+				if (message.outcome === "refused") return { ending: "refused", ...ending, refusal: message.refusal };
+				return { ending: "unknown", ...ending, reason: message.reason, agpCode: message.agpCode, deliveryReport: lastReport };
+			});
+
+			// A port that cannot schedule the bound is a fault of the port: invoke rejects, and nothing is sent.
+			timer = clock.schedule(left, () => {
+				if (!decided) atBound();
+			});
+			if (decided) return;
+			waiting.set(attempt, { invocation, operation, endpoint, host: call.host, take });
 			let sending: Promise<{ readonly messageId: string }>;
 			try {
 				sending = node.send(REPLY_ENDPOINT as EndpointName, endpoint as EndpointName, request as unknown as JsonObject, {
 					correlationId: attempt as never,
-					timeoutMs: left,
+					// The time left, rounded up and at least 1 ms; the call's own bound still ends at its deadline.
+					timeoutMs: Math.max(1, Math.ceil(left)),
 					destinationSelector: { originNodeId: call.host as never, mode: "pinned" },
 					...(call.signal === undefined ? {} : { signal: call.signal }),
 				});
 			} catch (error) {
 				sending = Promise.reject(error);
 			}
-			sending.then((receipt) => {
+			// A fault of AGP's port in these reactions leaves the bound to end the call; none goes unhandled.
+			Promise.resolve(sending).then((receipt) => {
 				if (decided) return;
 				const id = receipt.messageId as never;
 				observe(node.disposition(id));
-				node.settled(id).then(observe, () => undefined);
-			}, (error: unknown) => notDelivered(agpCodeOf(error)));
+				if (decided) return;
+				Promise.resolve(node.settled(id)).then(observe).catch(() => undefined);
+			}, (error: unknown) => observed(() => notDelivered(agpCodeOf(error)))).catch(() => undefined);
 		});
 	};
 

@@ -8,7 +8,7 @@ import type { AgpNode } from "@agp/node";
 import type { CallEnding } from "../call-types.js";
 import { writeEnd, writePart, REPLY_ENDPOINT } from "../message-format.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { checkAtBound, checkNotDelivered, discardedCount, inCase, runOutBound, SERVICE } from "./suite-support.js";
+import { beneathBound, checkAtBound, checkNotDelivered, discardedCount, inCase, runOutBound, SERVICE } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 export const callerChosenBoundCases: readonly SuiteCase[] = [
@@ -44,18 +44,24 @@ export const callerChosenBoundCases: readonly SuiteCase[] = [
 		}),
 	},
 	{
-		name: "AGP is given the time left on the bound as the send's admission deadline",
+		name: "AGP is given the time left on the bound as the send's admission deadline, the bound less the hop allowance across a hop",
 		run: (h) => inCase(h, {}, async (c) => {
+			const bound = 100;
+			// The time the call beneath is given (zorg's D46): the bound itself for a direct caller.
+			const admission = beneathBound(c.harness, bound);
 			const release = c.hooks.holdExecutor(c.session.callerNodeId);
-			const call = watch(c.call({ operation: "which", bound: 100 }));
+			const call = watch(c.call({ operation: "which", bound }));
 			await settle();
-			c.hooks.advanceAgpClock(99);
+			c.hooks.advanceAgpClock(admission - 1);
 			await settle();
-			check(!call.settled(), "the admission deadline has not passed after 99 ms of AGP's clock");
+			check(!call.settled(), `the admission deadline has not passed after ${admission - 1} ms of AGP's clock`);
 			c.hooks.advanceAgpClock(1);
-			await until(call.settled, "AGP's refusal at 100 ms");
-			checkNotDelivered(call.value(), ["TIMEOUT"], false, "the admission deadline of 100 ms");
+			await until(call.settled, `AGP's refusal at ${admission} ms`);
+			checkNotDelivered(call.value(), ["TIMEOUT"], false, `the admission deadline of ${admission} ms`);
 			await release();
+			c.hooks.advanceAgpClock(0);
+			await settle();
+			same(c.a.runs.length, 0, "the refused request never arrived after the queue drained");
 		}),
 	},
 	{

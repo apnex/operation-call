@@ -81,6 +81,59 @@ export function isJson(value: unknown): value is JsonValue {
 	return true;
 }
 
+/**
+ * A plain copy of a value, reading each member exactly once, or undefined when the value is not JSON as
+ * `isJson` judges it. A getter or a proxy is read, never trusted: what it gave is what the copy holds, so the
+ * copy is judged and sent rather than the value, which could give something else when read again; and one
+ * that throws throws from here, for the caller of this function to contain.
+ */
+export function snapshotJson(value: unknown): JsonValue | undefined {
+	interface Slot { readonly value: unknown; readonly store: (copy: JsonValue) => void }
+	let result: JsonValue | undefined;
+	const stack: Slot[] = [{ value, store: (copy) => { result = copy; } }];
+	// The containers being copied above the current slot, so a value holding itself is found.
+	const open = new Set<object>();
+	const exits: { readonly item: object; readonly depth: number }[] = [];
+	while (stack.length > 0) {
+		while (exits.length > 0 && (exits.at(-1) as { depth: number }).depth >= stack.length) open.delete((exits.pop() as { item: object }).item);
+		const { value: item, store } = stack.pop() as Slot;
+		if (item === null || typeof item === "boolean" || typeof item === "string") {
+			store(item);
+			continue;
+		}
+		if (typeof item === "number") {
+			if (!Number.isFinite(item)) return undefined;
+			store(item);
+			continue;
+		}
+		if (typeof item !== "object" || open.has(item)) return undefined;
+		const members: [string | number, unknown][] = [];
+		let copy: JsonValue[] | { [name: string]: JsonValue };
+		if (Array.isArray(item)) {
+			const length = item.length;
+			for (let i = 0; i < length; i++) {
+				if (!(i in item)) return undefined;
+				members.push([i, item[i]]);
+			}
+			copy = new Array<JsonValue>(length);
+		} else {
+			const proto = Object.getPrototypeOf(item);
+			if (proto !== Object.prototype && proto !== null) return undefined;
+			for (const name of Object.keys(item)) members.push([name, (item as { [name: string]: unknown })[name]]);
+			copy = {};
+		}
+		store(copy);
+		open.add(item);
+		exits.push({ item, depth: stack.length });
+		const target = copy as { [key: string | number]: JsonValue };
+		for (let i = members.length - 1; i >= 0; i--) {
+			const [key, member] = members[i] as [string | number, unknown];
+			stack.push({ value: member, store: (c) => { Object.defineProperty(target, key, { value: c, enumerable: true, writable: true, configurable: true }); } });
+		}
+	}
+	return result;
+}
+
 /** Levels of nesting: 0 for a scalar, and one more than its deepest member for an array or object (EM10). */
 export function nestingDepth(value: JsonInput): number {
 	let deepest = 0;
