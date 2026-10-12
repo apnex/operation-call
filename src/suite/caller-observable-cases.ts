@@ -15,15 +15,22 @@ function validCall(c: CaseContext): { [name: string]: unknown } {
 }
 
 /**
- * Checks that each change to a valid call makes invoke reject with the error class given and send nothing;
+ * Checks that each change to a valid call makes invoke reject with the error class given and send nothing -
+ * the promise invoke gives rejecting, as operation-call's caller's does, never a throw as invoke is called;
  * then that the valid call itself is sent, so the count the check reads moves when something is sent.
  */
 async function checkProgrammingErrors(c: CaseContext, changes: readonly (readonly [string, { [name: string]: unknown }])[], kind: RangeErrorConstructor | TypeErrorConstructor): Promise<void> {
 	const before = c.hooks.requests();
 	for (const [what, change] of changes) {
 		let error: unknown;
+		let given: Promise<CallEnding> | undefined;
 		try {
-			await invokeExactly(c, { ...validCall(c), ...change });
+			given = c.session.caller.invoke({ ...validCall(c), ...change } as never);
+		} catch (thrown) {
+			check(false, `${what}: invoke gives a promise that rejects, never throwing as it is called, not ${String(thrown)}`);
+		}
+		try {
+			await given;
 		} catch (thrown) {
 			error = thrown;
 		}
@@ -75,6 +82,22 @@ export const callArgumentCases: readonly SuiteCase[] = [
 				["an input holding itself", { input: cyclic() }], ["an input of NaN", { input: Number.NaN }], ["an input holding Infinity", { input: [Number.POSITIVE_INFINITY] }],
 				["an input of a BigInt", { input: 1n }], ["an undefined input", { input: undefined }], ["an input holding a function", { input: { f: () => 1 } }], ["an input of a Date", { input: new Date(0) }],
 			], TypeError);
+		}),
+	},
+	{
+		name: "an abort signal that is given and is not an abort signal - null, one without aborted, one whose aborted is not a boolean - throws a TypeError, and nothing is sent; a genuine signal is taken",
+		run: (h) => inCase(h, {}, async (c) => {
+			await checkProgrammingErrors(c, [
+				["a null signal", { signal: null }],
+				["a signal without aborted", { signal: { addEventListener: () => undefined, removeEventListener: () => undefined } }],
+				["a signal whose aborted is the string false", { signal: { aborted: "false", addEventListener: () => undefined, removeEventListener: () => undefined } }],
+				["a signal whose aborted is 0", { signal: { aborted: 0, addEventListener: () => undefined, removeEventListener: () => undefined } }],
+			], TypeError);
+			// The control: the same call with a genuine signal, not aborted, is sent and answered.
+			const before = c.hooks.requests();
+			const genuine = new AbortController().signal;
+			same((await invokeExactly(c, { ...validCall(c), signal: genuine })).ending, "answered", "the call with a genuine signal is answered");
+			same(c.hooks.requests(), before + 1, "and was sent");
 		}),
 	},
 	{
