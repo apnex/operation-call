@@ -2,7 +2,8 @@
  * The caller's interface (zorg's target, EM12): what a caller asks, and how each invocation ends.
  *
  * Every invocation ends exactly once: answered, refused with a refusal record, not delivered - AGP refused
- * this attempt outright, so it had no effect - or unknown. operation-proxy's client half offers this same
+ * this attempt outright, or a caller across a hop handed nothing of it on, so it had no effect - or unknown.
+ * operation-proxy's client half offers this same
  * interface (its `caller-interface-parity`), and its caller suite is written against it. The interface's types
  * admit what every implementation honestly gives - `attempt` null where no attempt of the call layer is known,
  * a `proxyCode` a caller across a hop names, and the reasons a hop adds - while operation-call's own caller
