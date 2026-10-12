@@ -1,14 +1,15 @@
 /**
  * operation-call's caller contract suite, exported as `@apnex/operation-call/caller-suite` (operation-proxy's
  * PX10; zorg's E6 and E17): a function taking the consumer's test registration and a harness - which gives
- * each case the caller under test and the fixture's hooks: the call bound's clock, AGP's injected clock and
- * executor barrier, and the channel-loss hook - and registering every caller case of operation-call's
- * contract tests.
+ * each case the caller under test and the fixture's hooks: the call bound's clock, a fault of the caller under
+ * test's own clock port, AGP's injected clock and executor barrier, and the channel-loss hook - and
+ * registering every caller case of operation-call's contract tests.
  *
  * operation-call's own contract tests run it directly against its own caller; operation-proxy runs it
  * against its client half, through its proxy, so the caller is any implementation of the caller interface.
  * The suite holds every case a caller can observe (zorg's target, EM12): invalid arguments, every ending's
- * exact fields and freezing, when an event happens on the call's clock, and remote descriptions included;
+ * exact fields and freezing, when an event happens on the call's clock, remote descriptions, and a clock port
+ * that throws at a reading or a timer's cancellation as an answer, a refusal or the bound decides included;
  * cases a caller cannot observe - malformed requests, evidence, declarations and E9's corpus - stay in
  * operation-call's own contract files. The harness states its hop allowance (zorg's D45): 0 for a direct
  * caller, and for a caller across a hop the allowance by which its far side's call ends sooner, so a case
@@ -21,6 +22,7 @@
 import { callerChosenBoundCases, requestCorrelationCases } from "./suite/bound-and-correlation-cases.js";
 import { boundArgumentCases, callArgumentCases, descriptionCases, identityArgumentCases, repeatArgumentCases } from "./suite/caller-observable-cases.js";
 import { channelLossCases } from "./suite/channel-loss-cases.js";
+import { clockFaultCases } from "./suite/clock-fault-cases.js";
 import { eventTimeCases, preparationTimeCases } from "./suite/event-time-cases.js";
 import { honestCallEndingCases } from "./suite/honest-call-ending-cases.js";
 import { notDeliveredCases } from "./suite/not-delivered-cases.js";
@@ -31,7 +33,7 @@ export type { CallerSuiteHarness, CallerSuiteHooks, CallerSuiteOpenOptions, Call
 
 /** The caller cases of each contract row. */
 const CASES: { readonly [row: string]: readonly SuiteCase[] } = {
-	"honest-call-ending": [...honestCallEndingCases, ...eventTimeCases, ...channelLossCases, ...callArgumentCases],
+	"honest-call-ending": [...honestCallEndingCases, ...eventTimeCases, ...channelLossCases, ...callArgumentCases, ...clockFaultCases],
 	"caller-chosen-bound": [...callerChosenBoundCases, ...preparationTimeCases, ...boundArgumentCases],
 	"invocation-identity": [...invocationIdentityCases, ...identityArgumentCases],
 	"request-correlation": requestCorrelationCases,

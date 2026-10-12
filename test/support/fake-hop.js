@@ -7,10 +7,13 @@
 // rounded down, the far side's bound rounded down to a whole millisecond (PX5; zorg's D46) - both on the
 // fixture's call bound clock; less than 1 ms left for the far side ends it not delivered with the proxy's
 // `deadline-passed`, as PX5 says. An invalid call is handed on unchanged, so the call layer throws for it.
-// The far side's ending crosses the hop a turn of the event loop later; when the caller's own bound passes
-// first, the call ends `unknown` with `hop-stalled` and no AGP code or delivery
-// report, as operation-proxy's client half ends it. A hop that is `held` carries no ending at all, so every
-// call that ends at its bound ends `hop-stalled`: the case the suite must refuse.
+// The far side's ending crosses the hop a turn of the event loop later, and is read there on the stand-in's
+// own clock port - the caller suite's fault hook's, the call layer's beneath it being the fixture's plain call
+// clock; when the caller's own bound has passed first, by its timer or as the ending is read, the call ends
+// `unknown` with `hop-stalled` and no AGP code or delivery report, as operation-proxy's client half ends it.
+// A reading that throws shows nothing passed, so the ending read decides, and the timer's cancellation comes
+// after the ending is settled, so its failure changes nothing (zorg's EM12). A hop that is `held` carries no
+// ending at all, so every call that ends at its bound ends `hop-stalled`: the case the suite must refuse.
 import { openTopology } from "./fixture.js";
 
 /** True for a bound EM12 allows; any other is handed on unchanged, for the call layer to throw as it does. */
@@ -31,23 +34,44 @@ function hopCaller(inner, clock, allowanceMs, held) {
 				return Promise.resolve(Object.freeze({ ending: "not-delivered", invocation, attempt: null, operation: call.operation, agpCode: null, proxyCode: "deadline-passed", earlierAttemptsUncertain: call.repeat === true }));
 			}
 			const far = inner.invoke({ ...call, invocation, bound: farBound });
+			const deadline = start + call.bound;
 			return new Promise((resolve, reject) => {
 				let ended = false;
 				let attempt = null;
+				let timer;
+				const cancel = () => {
+					try {
+						timer?.cancel();
+					} catch {
+						// A timer that still runs finds the call ended.
+					}
+				};
 				const end = (ending) => {
 					if (ended) return;
 					ended = true;
-					timer.cancel();
 					resolve(ending);
+					cancel();
 				};
-				const timer = clock.schedule(Math.max(0, start + call.bound - clock.now()), () => end(Object.freeze({
+				const stalled = () => Object.freeze({
 					ending: "unknown", invocation, attempt, operation: call.operation, reason: "hop-stalled", agpCode: null, deliveryReport: null,
-				})));
+				});
+				timer = clock.schedule(Math.max(0, deadline - clock.now()), () => end(stalled()));
 				far.then((ending) => {
 					attempt = ending.attempt;
-					if (!held) setImmediate(() => end(ending));
+					if (held) return;
+					setImmediate(() => {
+						if (ended) return;
+						let passed;
+						try {
+							passed = clock.now() >= deadline;
+						} catch {
+							passed = false;
+						}
+						end(passed ? stalled() : ending);
+					});
 				}, (error) => {
-					timer.cancel();
+					ended = true;
+					cancel();
 					reject(error);
 				});
 			});
@@ -60,8 +84,8 @@ export function fakeHopHarness({ allowanceMs, held = false }) {
 	return {
 		hopAllowanceMs: allowanceMs,
 		async open(options = {}) {
-			const t = await openTopology({ ...options, boundedInvoke: false });
-			return { caller: hopCaller(t.caller, t.callClock, allowanceMs, held), callerNodeId: "caller", hosts: t.hosts, hooks: t.hooks, close: () => t.close() };
+			const t = await openTopology({ ...options, boundedInvoke: false, faultCaller: false });
+			return { caller: hopCaller(t.caller, t.faultableClock, allowanceMs, held), callerNodeId: "caller", hosts: t.hosts, hooks: t.hooks, close: () => t.close() };
 		},
 	};
 }

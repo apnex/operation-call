@@ -1,8 +1,9 @@
 // fixture - three AGP nodes over AGP's production in-process carrier, @agp/transport-loopback: a caller's
 // node dialling two host nodes that listen (zorg's Delta 1, verification targets; E6, E8). Every node runs
 // on one AGP injected clock (ManualClock), and the call's bound on a separate manual clock. The fixture
-// offers the hooks of operation-call's caller suite: both clocks, an executor barrier on any node, the loss
-// of the channel between the caller's node and a host, and the observations a case waits on.
+// offers the hooks of operation-call's caller suite: both clocks, a fault of the caller's own clock port, an
+// executor barrier on any node, the loss of the channel between the caller's node and a host, and the
+// observations a case waits on, the rejections and exceptions left unhandled among them.
 import { ManualClock } from "@agp/core";
 import { createNode } from "@agp/node";
 import { createLoopbackFabric } from "@agp/transport-loopback";
@@ -33,12 +34,63 @@ export function within(promise, what = "the ending", ms = 15_000) {
 }
 
 /**
+ * The clock port of the caller under test over `clock`, with the caller suite's fault hook (zorg's EM12): once
+ * armed, it throws at its next reading, or at its next cancellation of a timer, which it then leaves to run,
+ * as a port that failed to cancel it would; it records each throw, and counts the timers it holds that have
+ * neither run nor been cancelled.
+ */
+export function faultableCallClock(clock) {
+	let armed;
+	const faults = [];
+	const live = new Set();
+	return {
+		faults,
+		arm(at) {
+			if (at !== "read" && at !== "cancel") throw new RangeError(`a clock port fails at a reading or a cancellation, not ${at}`);
+			armed = at;
+		},
+		outstanding: () => live.size,
+		now() {
+			if (armed === "read") {
+				armed = undefined;
+				faults.push("read");
+				throw new Error("the caller suite's fault hook: the clock port could not be read");
+			}
+			return clock.now();
+		},
+		schedule(delayMs, callback) {
+			const entry = {};
+			live.add(entry);
+			let timer;
+			try {
+				timer = clock.schedule(delayMs, () => { live.delete(entry); callback(); });
+			} catch (error) {
+				live.delete(entry);
+				throw error;
+			}
+			return {
+				cancel() {
+					if (armed === "cancel") {
+						armed = undefined;
+						faults.push("cancel");
+						throw new Error("the caller suite's fault hook: the clock port could not cancel a timer");
+					}
+					live.delete(entry);
+					timer.cancel();
+				},
+			};
+		},
+	};
+}
+
+/**
  * Builds the topology: `caller` dials `host-a` and `host-b`. Options: holdDeliveryReports, a host
  * disposition debounce of 60 s with no count bound; identities, the caller's identity source; callerOptions,
  * passed to createCaller; makeCaller false, to build no caller; realCallClock, to bound calls on the
  * default system call clock instead of the manual one, whose hooks then refuse to move it. The caller's
  * invoke fails a call with no ending within 15 s of real time, unless boundedInvoke is false, as the caller
- * suite's harness needs.
+ * suite's harness needs. The caller is given the fault hook's clock port over the call clock, unless
+ * faultCaller is false, as for a caller under test in front of it, which takes `faultableClock` itself.
  */
 export async function openTopology(options = {}) {
 	const fabricId = `operation-call-${++fabrics}`;
@@ -50,6 +102,12 @@ export async function openTopology(options = {}) {
 	const agpClock = new ManualClock();
 	const manualClock = createManualCallClock();
 	const callClock = options.realCallClock ? systemCallClock : manualClock;
+	const faultableClock = faultableCallClock(callClock);
+	// Each rejection left unhandled and each exception left uncaught while the topology is open.
+	const unhandled = [];
+	const onUnhandled = (error) => { unhandled.push(error); };
+	process.on("unhandledRejection", onUnhandled);
+	process.on("uncaughtException", onUnhandled);
 	const manual = (what) => {
 		if (options.realCallClock) throw new Error(`${what}: this session bounds calls on the system call clock, which no hook moves`);
 		return manualClock;
@@ -143,19 +201,26 @@ export async function openTopology(options = {}) {
 		afterNextAdmission: (action) => { afterAdmission.push(action); },
 		requests: () => requests,
 		failNextSend: () => { failNext = true; },
+		failCallClock: (at) => faultableClock.arm(at),
+		callClockFaults: () => [...faultableClock.faults],
+		// operation-call's caller holds no connection open and does not prepare: what it keeps is its timers.
+		outstanding: () => faultableClock.outstanding(),
+		unhandled: () => [...unhandled],
 	};
 
 	for (const h of hosts) await h.node.start();
 	await callerNode.start();
 	const built = options.makeCaller === false ? undefined
-		: await createCaller({ node: sendingNode, clock: callClock, ...(options.identities ? { identities: options.identities } : {}), ...options.callerOptions });
+		: await createCaller({ node: sendingNode, clock: options.faultCaller === false ? callClock : faultableClock, ...(options.identities ? { identities: options.identities } : {}), ...options.callerOptions });
 	const caller = built === undefined || options.boundedInvoke === false ? built
 		: { ...built, invoke: (call) => within(built.invoke(call), `the ending of a call to ${call?.operation}`) };
 	await until(() => hosts.every((h) => callerNode.operations.connections().items.some((c) => c.remoteNodeId === h.nodeId && c.state === "Established")), "both sessions established");
 
 	return {
-		fabric, agpClock, callClock, callerNode, sendingNode, hosts, caller, hooks, channels,
+		fabric, agpClock, callClock, faultableClock, callerNode, sendingNode, hosts, caller, hooks, channels,
 		async close() {
+			process.off("unhandledRejection", onUnhandled);
+			process.off("uncaughtException", onUnhandled);
 			for (const blocker of holds) blocker.resolve();
 			stream.close();
 			await Promise.allSettled([callerNode.stop(), ...hosts.map((h) => h.node.stop())]);

@@ -4,8 +4,8 @@
  * A harness opens a fresh session for each case: the caller under test - operation-call's own caller, or
  * another implementation of the same caller interface, such as operation-proxy's client half - the AGP node
  * that sends the caller's requests, two host nodes on which the suite serves the same fixture operations,
- * and the fixture's hooks: the call bound's clock, AGP's injected clock, an executor barrier, the
- * channel-loss hook, and the observations a case waits on. Every node runs over AGP's production in-process
+ * and the fixture's hooks: the call bound's clock, a fault of the caller under test's own clock port, AGP's
+ * injected clock, an executor barrier, the channel-loss hook, and the observations a case waits on. Every node runs over AGP's production in-process
  * carrier, `@agp/transport-loopback`. Nothing here is particular to one runtime (zorg's D31).
  */
 import type { AgpNode } from "@agp/node";
@@ -54,6 +54,30 @@ export interface CallerSuiteHooks {
 	requests(): number;
 	/** Makes the next send the caller's node is asked for reject with an error carrying no AGP code, unsent. */
 	failNextSend(): void;
+	/**
+	 * Makes the clock port of the caller under test throw once: at its next reading (`read`), or at its next
+	 * cancellation of a timer (`cancel`), which then leaves that timer to run, as a port that failed to cancel
+	 * it would. The port is the caller under test's own - operation-call's caller's in a direct harness, the
+	 * client half's across a hop - never that of the call layer beneath a hop (zorg's EM12; operation-proxy's
+	 * PX10). A clock port that throws is a fault of the port, and the event the caller observed then decides.
+	 */
+	failCallClock(at: "read" | "cancel"): void;
+	/** Each throw `failCallClock` made the clock port of the caller under test give, in order. */
+	callClockFaults(): readonly ("read" | "cancel")[];
+	/**
+	 * How many things the caller under test still keeps that could hold its process or wait, as its harness
+	 * observes them: timers on its clock port neither run nor cancelled, connections it holds its process open
+	 * by, and connections it is still making while it prepares.
+	 */
+	outstanding(): number;
+	/** Each rejection left unhandled, and each exception left uncaught, in the session's process since it opened. */
+	unhandled(): readonly unknown[];
+	/**
+	 * Present only for a caller that prepares before it sends, such as operation-proxy's client half (its PX5):
+	 * makes its next preparing be refused by the far side, and gives the `proxyCode` the not-delivered ending
+	 * then names.
+	 */
+	refuseNextPreparing?(): string;
 }
 
 /** One case's session. */

@@ -9,7 +9,10 @@
 // failure each observed once the bound has passed and before the bound's callback has run, each losing to
 // the bound (EM12: an event happens when it occurs on the call's clock); the channel lost before any report,
 // after delivered, after failed, and with an answer held until reconnection and released before or after the
-// bound; a service, operation or input that is a programming error; and every ending's exact fields, frozen.
+// bound; a service, operation or input that is a programming error; every ending's exact fields, frozen; and
+// the caller's own clock port throwing at a reading or a timer's cancellation as an answer, a refusal, AGP's
+// refusal of the send and the bound decide, each ending once as the observed event decides, through the
+// fixture's fault hook, with nothing left waiting and no rejection unhandled (zorg's EM12).
 //
 // Beside them, on a node whose every answer the test controls: each terminal observation - an answer, a
 // refusal, a failed end, AGP's rejection, AGP's report of failure - placed after the bound with the bound's
