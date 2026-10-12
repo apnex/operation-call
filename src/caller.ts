@@ -18,7 +18,7 @@
  * failure. Nothing here is particular to one runtime (zorg's D31).
  */
 import type { AgpNode, EndpointName, JsonObject } from "@agp/node";
-import type { CallEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
+import type { CallLayerEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
 import { snapshotJson, type JsonValue } from "./json-value.js";
 import { readMessage, requestSendable, writeRequest, type EndMessage } from "./message-format.js";
 import { isInvocationId, isName, makeAttemptId, makeInvocationId, REPLY_ENDPOINT, type IdentitySource } from "./names.js";
@@ -43,6 +43,8 @@ export interface CallerOptions {
 
 /** A caller over one AGP node. */
 export interface Caller extends OperationCaller {
+	/** Invokes a named operation; the call layer's own endings only, none a caller across a hop adds (EM12). */
+	invoke(call: CallRequest): Promise<CallLayerEnding>;
 	/** A new invocation identity, as EM11 writes it, for a caller that names its invocation before invoking. */
 	newInvocation(): string;
 	/** How many messages the reply endpoint has discarded because no waiting attempt could take them (EM11). */
@@ -132,7 +134,7 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 		attempt.take(message);
 	});
 
-	const invoke = async (call: CallRequest): Promise<CallEnding> => {
+	const invoke = async (call: CallRequest): Promise<CallLayerEnding> => {
 		// The bound starts when the caller invokes (EM12): its deadline is read before anything else is done.
 		const start = read();
 		const input = checkCall(call);
@@ -159,12 +161,12 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 			}
 		};
 
-		return new Promise<CallEnding>((resolve) => {
+		return new Promise<CallLayerEnding>((resolve) => {
 			let decided = false;
 			let lastReport: DeliveryReport | null = null;
 			let timer: ClockTimer | undefined;
 			/** Settles the chosen ending; cancelling the bound's timer comes after, and its failure changes nothing. */
-			const settle = (ending: CallEnding): void => {
+			const settle = (ending: CallLayerEnding): void => {
 				decided = true;
 				waiting.delete(attempt);
 				resolve(Object.freeze(ending));
@@ -177,12 +179,12 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 			};
 			const atBound = (): void => settle({ ending: "unknown", ...address, reason: "bound-passed", agpCode: null, deliveryReport: lastReport });
 			/** An event observed now: when the bound has already passed on the call's clock, the bound came first. */
-			const observed = (ending: () => CallEnding): void => {
+			const observed = (ending: () => CallLayerEnding): void => {
 				if (decided) return;
 				if (boundPassed()) atBound();
 				else settle(ending());
 			};
-			const notDelivered = (agpCode: string): CallEnding =>
+			const notDelivered = (agpCode: string): CallLayerEnding =>
 				({ ending: "not-delivered", ...address, agpCode, proxyCode: null, earlierAttemptsUncertain: repeat });
 			const observe = (disposition: MessageDisposition | undefined): void => {
 				if (decided || disposition === undefined) return;

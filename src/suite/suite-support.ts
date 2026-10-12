@@ -293,7 +293,7 @@ export function checkNotDelivered(ending: CallEnding | undefined, codes: readonl
 	check(ending !== undefined, `${what}: an ending`);
 	same(ending.ending, "not-delivered", `${what}: the ending`);
 	if (ending.ending !== "not-delivered") return;
-	check(codes.includes(ending.agpCode), `${what}: AGP's code is one of ${codes.join(", ")}, not ${ending.agpCode}`);
+	check(ending.agpCode !== null && codes.includes(ending.agpCode), `${what}: AGP's code is one of ${codes.join(", ")}, not ${ending.agpCode}`);
 	check(!Object.hasOwn(ending, "refusal"), `${what}: no refusal record`);
 	same(ending.earlierAttemptsUncertain, uncertain, `${what}: earlierAttemptsUncertain`);
 }

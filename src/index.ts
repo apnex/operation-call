@@ -15,6 +15,6 @@ export { createOperationHost, type DeclarationOutcome, type DeliveryContext, typ
 export { DECLARATION_LIMITS, type AnswerMode, type DescribedOperation, type Description, type HostRefusal, type HostRefusalCode, type OperationDeclaration } from "./declarations.js";
 export { systemCallClock, systemIdentitySource, type CallClock, type ClockTimer } from "./system-ports.js";
 export type { IdentitySource } from "./names.js";
-export type { AnsweredEnding, CallEnding, CallRequest, DeliveryReport, EndingAddress, NotDeliveredEnding, OperationCaller, RefusedEnding, UnknownEnding, UnknownReason } from "./call-types.js";
+export type { AnsweredEnding, CallEnding, CallLayerAddress, CallLayerEnding, CallLayerNotDeliveredEnding, CallLayerUnknownEnding, CallLayerUnknownReason, CallRequest, DeliveryReport, EndingAddress, HopNotDeliveredEnding, HopUnknownEnding, HopUnknownReason, NotDeliveredEnding, OperationCaller, RefusedEnding, UnknownEnding, UnknownReason } from "./call-types.js";
 export type { CallRefusalCode, RefusalRecord } from "./refusal.js";
 export type { JsonInput, JsonObject, JsonValue } from "./json-value.js";
