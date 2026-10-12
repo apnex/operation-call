@@ -49,8 +49,9 @@ export type UnknownReason = CallLayerUnknownReason | HopUnknownReason;
 
 /**
  * The fields every ending carries: the invocation and attempt it ended, and the operation's name. `attempt` is
- * null where no attempt of the call layer is known - an ending a caller across a hop decided itself (EM12;
- * operation-proxy's PX6); operation-call's own caller always names its attempt.
+ * null where no attempt of the call layer is known - an ending a caller across a hop decided itself once its
+ * own checks were done (EM12; operation-proxy's PX6); an ending of those checks names the attempt it made, as
+ * operation-call's own caller always names its attempt (operation-proxy's PX5).
  */
 export interface EndingAddress {
 	readonly invocation: string;
