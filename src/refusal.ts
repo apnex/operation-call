@@ -6,7 +6,7 @@
  * another's refusal passes it on unchanged. operation-call's own codes are `input-misfit`,
  * `malformed-request` and `not-sendable`, none naming any detail. A failure of AGP's is never a refusal.
  */
-import type { ShapeMisfit } from "@apnex/shape-check";
+import { readPlainJson, type ShapeMisfit } from "@apnex/shape-check";
 import { isJson, isJsonObject, type JsonValue } from "./json-value.js";
 
 /** A refusal record (EM9). */
@@ -46,6 +46,50 @@ export function isRefusalRecord(value: unknown): value is RefusalRecord {
 		if (!Array.isArray(misfits) || !misfits.every(isMisfit)) return false;
 	}
 	return true;
+}
+
+const NAMED_FIELDS = ["part", "code", "what", "why", "fix"];
+
+/** True for a JSON object, false for null, arrays and scalars. */
+function isObject(value: unknown): value is { readonly [name: string]: unknown } {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** True for a string holding at least one character. */
+function isFilled(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
+/** True when an object holds exactly the named keys. */
+function holdsExactly(value: { readonly [name: string]: unknown }, names: readonly string[]): boolean {
+	const own = Object.keys(value);
+	return own.length === names.length && names.every((n) => Object.hasOwn(value, n));
+}
+
+/** True when a plain JSON value is a misfit record of shape-check's SD4, its keyword named. */
+function isPlainMisfit(value: unknown): boolean {
+	return isObject(value) && holdsExactly(value, MISFIT_FIELDS)
+		&& typeof value.pointer === "string" && isFilled(value.keyword) && typeof value.fit === "string";
+}
+
+/**
+ * Reads a candidate refusal as plain data (zorg's D54, D55) through shape-check's `readPlainJson`, running none
+ * of its code, and checks EM9's exact form: `part`, `code`, `what`, `why` and `fix` non-empty strings, `details`
+ * an object, and, only beside them, `misfits`, a non-empty list of SD4's misfit records. Gives the refusal
+ * deeply frozen, or `{ok: false}`.
+ */
+export function readRefusalRecord(value: unknown): { readonly ok: true; readonly refusal: RefusalRecord } | { readonly ok: false } {
+	const reading = readPlainJson(value);
+	if (!reading.ok) return Object.freeze({ ok: false });
+	const refusal = reading.value;
+	if (!isObject(refusal)) return Object.freeze({ ok: false });
+	const fields = Object.hasOwn(refusal, "misfits") ? [...REFUSAL_FIELDS, "misfits"] : REFUSAL_FIELDS;
+	if (!holdsExactly(refusal, fields) || !NAMED_FIELDS.every((n) => isFilled(refusal[n])) || !isObject(refusal.details)) return Object.freeze({ ok: false });
+	if (Object.hasOwn(refusal, "misfits")) {
+		const misfits = refusal.misfits;
+		if (!Array.isArray(misfits) || misfits.length === 0 || !misfits.every(isPlainMisfit)) return Object.freeze({ ok: false });
+	}
+	return Object.freeze({ ok: true, refusal: refusal as unknown as RefusalRecord });
 }
 
 /** A misfit refusal: the input does not fit the operation's declared shape (EM9). */

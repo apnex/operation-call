@@ -5,6 +5,9 @@
       "exports": {
         "createCaller": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select"] },
         "MAX_BOUND_MS": { "part": "operation-call", "serves": ["caller-chosen-bound"] },
+        "readCallEnding": { "part": "operation-call", "serves": ["honest-call-ending"] },
+        "readRefusalRecord": { "part": "operation-call", "serves": ["call-refusal"] },
+        "readCallRequest": { "part": "operation-call", "serves": ["caller-chosen-bound"] },
         "createOperationHost": { "part": "operation-call", "serves": ["serve-named-operations", "operation-descriptions", "declared-shape-validation", "call-refusal", "request-correlation", "peer-identity-evidence"] },
         "DECLARATION_LIMITS": { "part": "operation-call", "serves": ["operation-descriptions"] },
         "systemCallClock": { "part": "operation-call", "serves": ["caller-chosen-bound"] },

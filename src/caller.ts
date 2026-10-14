@@ -19,7 +19,8 @@
  */
 import type { AgpNode, EndpointName, JsonObject } from "@agp/node";
 import type { CallLayerEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
-import { snapshotJson, type JsonValue } from "./json-value.js";
+import { snapshotJson } from "@apnex/shape-check";
+import type { JsonValue } from "./json-value.js";
 import { readMessage, requestSendable, writeRequest, type EndMessage } from "./message-format.js";
 import { isInvocationId, isName, makeAttemptId, makeInvocationId, REPLY_ENDPOINT, type IdentitySource } from "./names.js";
 import { notSendable } from "./refusal.js";
@@ -69,37 +70,58 @@ function agpCodeOf(error: unknown): string {
 	return typeof code === "string" && code.length > 0 ? code : "INTERNAL";
 }
 
-/**
- * Reads a call's input once into the JSON value the call checks and sends (EM12), so an accessor on the
- * input is read now and never again; an accessor that throws is the caller's programming error, as a
- * non-JSON input is.
- */
-function snapshotInput(input: unknown): JsonValue {
-	let snapshot: JsonValue | undefined;
-	try {
-		snapshot = snapshotJson(input);
-	} catch (error) {
-		throw new TypeError("a call's input could not be read as a JSON value", { cause: error });
-	}
-	if (snapshot === undefined) throw new TypeError("a call's input must be a JSON value");
-	return snapshot;
+/** A call request as `readCallRequest` gives it: each field read once and checked, and the input's snapshot. */
+export interface ReadCallRequest {
+	readonly host: string;
+	readonly service: string;
+	readonly operation: string;
+	readonly input: JsonValue;
+	readonly bound: number;
+	readonly invocation: string | undefined;
+	readonly repeat: boolean;
+	readonly signal: AbortSignal | undefined;
 }
 
 /**
- * Checks a call's arguments and gives the input's snapshot; a call that breaks them is the caller's
- * programming error, not an ending.
+ * Reads a call request (EM12): `host`, `service`, `operation`, `bound`, `invocation`, `repeat` and `signal` at most
+ * once each, and `input` once through shape-check's `snapshotJson`, so an accessor on the request or the input
+ * is read now and never again. A call that breaks them is the caller's programming error, thrown as a
+ * `RangeError` (the bound) or a `TypeError` (anything else), never an ending; an input accessor that throws is
+ * such an error too. Gives the checked request, the caller's live abort signal kept as it was given.
  */
-function checkCall(call: CallRequest): JsonValue {
+export function readCallRequest(call: CallRequest): ReadCallRequest {
 	if (call === null || typeof call !== "object") throw new TypeError("invoke needs a call: { host, service, operation, input, bound }");
-	if (typeof call.host !== "string" || call.host.length === 0) throw new TypeError("a call names the host it means as an AGP node identifier");
-	if (!isName(call.service)) throw new TypeError("a call's service must match ^[a-z0-9][a-z0-9-]{0,62}$");
-	if (!isName(call.operation)) throw new TypeError("a call's operation must match ^[a-z0-9][a-z0-9-]{0,62}$");
-	const input = snapshotInput(call.input);
-	if (!Number.isInteger(call.bound) || call.bound < 1 || call.bound > MAX_BOUND_MS) throw new RangeError("a call's bound is a whole number of milliseconds from 1 to 2147483647");
-	if (call.invocation !== undefined && !isInvocationId(call.invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
-	if (call.repeat !== undefined && typeof call.repeat !== "boolean") throw new TypeError("a call's repeat flag is true or false");
-	if (call.signal !== undefined && (call.signal === null || typeof call.signal.aborted !== "boolean")) throw new TypeError("a call's signal must be an AbortSignal");
-	return input;
+	const host: unknown = call.host;
+	if (typeof host !== "string" || host.length === 0) throw new TypeError("a call names the host it means as an AGP node identifier");
+	const service: unknown = call.service;
+	if (!isName(service)) throw new TypeError("a call's service must match ^[a-z0-9][a-z0-9-]{0,62}$");
+	const operation: unknown = call.operation;
+	if (!isName(operation)) throw new TypeError("a call's operation must match ^[a-z0-9][a-z0-9-]{0,62}$");
+	let snapshot: ReturnType<typeof snapshotJson>;
+	try {
+		snapshot = snapshotJson(call.input);
+	} catch (error) {
+		throw new TypeError("a call's input could not be read as a JSON value", { cause: error });
+	}
+	if (!snapshot.ok) throw new TypeError("a call's input must be a JSON value");
+	const bound: unknown = call.bound;
+	if (typeof bound !== "number" || !Number.isInteger(bound) || bound < 1 || bound > MAX_BOUND_MS) throw new RangeError("a call's bound is a whole number of milliseconds from 1 to 2147483647");
+	const invocation: unknown = call.invocation;
+	if (invocation !== undefined && !isInvocationId(invocation)) throw new TypeError("a call's invocation must be an invocation identity as EM11 writes it");
+	const repeat: unknown = call.repeat;
+	if (repeat !== undefined && typeof repeat !== "boolean") throw new TypeError("a call's repeat flag is true or false");
+	const signal: unknown = call.signal;
+	if (signal !== undefined && (signal === null || typeof (signal as { aborted?: unknown }).aborted !== "boolean")) throw new TypeError("a call's signal must be an AbortSignal");
+	return Object.freeze({
+		host,
+		service,
+		operation,
+		input: snapshot.value,
+		bound,
+		invocation: invocation as string | undefined,
+		repeat: repeat === true,
+		signal: signal as AbortSignal | undefined,
+	});
 }
 
 /** Builds a caller on an AGP node, exposing the reply endpoint `operation-call/replies` there. */
@@ -137,11 +159,11 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 	const invoke = async (call: CallRequest): Promise<CallLayerEnding> => {
 		// The bound starts when the caller invokes (EM12): its deadline is read before anything else is done.
 		const start = read();
-		const input = checkCall(call);
-		const deadline = start + call.bound;
-		const invocation = call.invocation ?? makeInvocationId(identities);
+		// Then each field of the request is read once, and only what was read is used from here on.
+		const { host, service, operation, input, bound, repeat, signal, invocation: given } = readCallRequest(call);
+		const deadline = start + bound;
+		const invocation = given ?? makeInvocationId(identities);
 		const attempt = makeAttemptId(identities, invocation);
-		const operation = call.operation;
 		const address = { invocation, attempt, operation };
 		const request = writeRequest(address, input);
 		const sendable = requestSendable(request);
@@ -149,8 +171,7 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 		const left = deadline - read();
 		if (left <= 0) return Object.freeze({ ending: "unknown", ...address, reason: "bound-passed", agpCode: null, deliveryReport: null });
 		if (!sendable) return Object.freeze({ ending: "refused", ...address, refusal: notSendable() });
-		const repeat = call.repeat === true;
-		const endpoint = `${call.service}/${operation}`;
+		const endpoint = `${service}/${operation}`;
 
 		/** True once the bound has passed on the call's clock; a reading the port cannot give shows nothing passed. */
 		const boundPassed = (): boolean => {
@@ -225,15 +246,15 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 			// A port that cannot schedule the bound is a fault of the port: invoke rejects, and nothing is sent.
 			timer = clock.schedule(left, wake);
 			if (decided) return;
-			waiting.set(attempt, { invocation, operation, endpoint, host: call.host, take });
+			waiting.set(attempt, { invocation, operation, endpoint, host, take });
 			let sending: Promise<{ readonly messageId: string }>;
 			try {
 				sending = node.send(REPLY_ENDPOINT as EndpointName, endpoint as EndpointName, request as unknown as JsonObject, {
 					correlationId: attempt as never,
 					// The time left, rounded up and at least 1 ms; the call's own bound still ends at its deadline.
 					timeoutMs: Math.max(1, Math.ceil(left)),
-					destinationSelector: { originNodeId: call.host as never, mode: "pinned" },
-					...(call.signal === undefined ? {} : { signal: call.signal }),
+					destinationSelector: { originNodeId: host as never, mode: "pinned" },
+					...(signal === undefined ? {} : { signal }),
 				});
 			} catch (error) {
 				sending = Promise.reject(error);
