@@ -34,17 +34,17 @@ The trait column names any trait a system takes on by using the capability.
 
 | Capability | Relation | Requires | What a consumer can depend on | Trait |
 |---|---|---|---|---|
-| `honest-call-ending` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-disposition-report`, `agp:delivery-context` | Calling a named operation yields exactly one ending: answered, refused with a reason, not delivered, or unknown. | none |
-| `caller-chosen-bound` | provides | none | The caller sets the bound: total time for a whole answer, time to the next sign of life for an answer in parts. | none |
+| `honest-call-ending` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-disposition-report`, `agp:delivery-context`, `shape-check:plain-json-value` | Calling a named operation yields exactly one ending: answered, refused with a reason, not delivered, or unknown; exports `readCallEnding`, which reads a candidate ending as plain data (zorg's `D54`, `D55`), accepting the caller interface's direct, hop and whole-find endings. | none |
+| `caller-chosen-bound` | provides | `shape-check:plain-json-value` | The caller sets the bound: total time for a whole answer, time to the next sign of life for an answer in parts; exports `readCallRequest`, and the caller reads its clock first and then each option of `CallRequest` at most once. | none |
 | `answer-in-parts` | provides | `agp:route-or-refuse-send`, `agp:delivery-context` | An answer may arrive as ordered parts; a missing part, or a stop before the end, ends the invocation as unknown, and parts already received stand. | none |
 | `cancel-invocation` | provides | `agp:route-or-refuse-send` | A caller may end an invocation early, and the operation is told. | none |
 | `invocation-identity` | provides | none | Every invocation carries an identity that stays the same when the invocation is repeated, so the owner of an effect can recognise the repeat; it travels in operation-call's own envelope. | none |
 | `request-correlation` | provides | `agp:correlation-label`, `agp:delivery-context` | A reply or a delivery report is paired with the attempt it answers; each attempt carries its own correlation in the delivery beneath's label, so a late reply to an earlier attempt is never taken for a later one's. | none |
 | `not-delivered-signal` | provides, implied by `honest-call-ending` | `agp:route-or-refuse-send`, `agp:delivery-disposition-report` | "Not delivered" is reported only when the delivery beneath refused the attempt outright, so that attempt had no effect; it proves nothing about earlier attempts of the same invocation, whose uncertainty stands. | none |
-| `call-refusal` | provides | none | When an operation refuses an invocation, the caller receives what was wrong, why, and how to fix it, in the shared refusal form, carrying any reason another component supplied unchanged. | none |
+| `call-refusal` | provides | `shape-check:plain-json-value` | When an operation refuses an invocation, the caller receives what was wrong, why, and how to fix it, in the shared refusal form, carrying any reason another component supplied unchanged; exports `readRefusalRecord`, the validator of `EM9`'s refusal form as plain data (zorg's `D54`, `D55`). | none |
 | `operation-descriptions` | provides | none | Operations are declared as data - name, input shape, whether the answer comes whole or in parts - and a caller can read what a host offers. | none |
 | `declared-shape-validation` | carries from shape-check | none | Input is checked against the operation's declared shape before the operation runs, and a misfit is refused. | none |
-| `serve-named-operations` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-context` | A host exposes declared operations by name, and every invocation gets exactly one ending even when the operation fails. | none |
+| `serve-named-operations` | provides | `agp:expose-named-endpoint`, `agp:route-or-refuse-send`, `agp:delivery-context`, `shape-check:plain-json-value` | A host exposes declared operations by name, and every invocation gets exactly one ending even when the operation fails. | none |
 | `peer-identity-evidence` | carries from agp | none | The operation receives the delivery beneath's evidence of who is calling. | none |
 | `advertiser-instance-select` | carries from agp | none | A caller may name the instance it means; operation-call passes it on and never chooses one. | none |
 
@@ -55,7 +55,7 @@ operation-call holds nothing across a restart, coordinates no actors and contain
 ## Reference
 
 This repository, `apnex/operation-call`, private until its first working code is certified.\
-The package `@apnex/operation-call` exports `createCaller`, `createOperationHost`, `systemCallClock`, `systemIdentitySource`, `MAX_BOUND_MS` and `DECLARATION_LIMITS`; `@apnex/operation-call/message-format` exports the message format and the caller's own checks; and `@apnex/operation-call/caller-suite` exports `registerCallerSuite` and `callerSuiteRows`, the caller contract suite, as `export-map.json` records.\
+The package `@apnex/operation-call` exports `createCaller`, `createOperationHost`, `readCallEnding`, `readRefusalRecord`, `readCallRequest`, `systemCallClock`, `systemIdentitySource`, `MAX_BOUND_MS` and `DECLARATION_LIMITS`; `@apnex/operation-call/message-format` exports the message format and the caller's own checks; and `@apnex/operation-call/caller-suite` exports `registerCallerSuite` and `callerSuiteRows`, the caller contract suite, as `export-map.json` records.\
 `answer-in-parts` and `cancel-invocation` are deferred under zorg's `D15`.\
 It depends on `@agp/node` and `@apnex/shape-check` through `file:` links, takes AGP's types only, and imports no module particular to one runtime.
 
@@ -107,7 +107,7 @@ Its caller side and host side are halves of one duty, not separate components.
 **Consumes, through a declared contract:**
 
 - `agp`: `expose-named-endpoint`, `route-or-refuse-send`, `delivery-disposition-report`, `correlation-label`, `delivery-context`, `advertiser-instance-select`, `peer-identity-evidence`
-- `shape-check`: `declared-shape-validation`
+- `shape-check`: `declared-shape-validation`, `plain-json-value`
 
 AGP's capabilities are read from zorg's `upstream/agp-capabilities.md`.\
 Each attempt is paired through AGP's `correlation-label` (zorg's `D4`); a delivery layer without such a label is given one by operation-call's adapter, inside the payload.
