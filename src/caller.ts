@@ -20,7 +20,7 @@
 import type { AgpNode, EndpointName, JsonObject } from "@agp/node";
 import type { CallLayerEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
 import { snapshotJson } from "@apnex/shape-check";
-import type { JsonValue } from "./json-value.js";
+import type { JsonValue } from "@apnex/shape-check";
 import { readMessage, requestSendable, writeRequest, type EndMessage } from "./message-format.js";
 import { isInvocationId, isName, makeAttemptId, makeInvocationId, REPLY_ENDPOINT, type IdentitySource } from "./names.js";
 import { notSendable } from "./refusal.js";

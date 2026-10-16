@@ -11,8 +11,18 @@
  * than 20 levels. A refused declaration exposes no endpoint and leaves the operations already declared as
  * they were. A shape that is not a JSON value is a programming error, thrown before any shape is judged.
  */
-import { prepareShapeDocument, SHAPE_DIALECT_ID, type PreparedShape } from "@apnex/shape-check";
-import { canonicalJson, compareCodePoints, copyJson, cutTo128, firstUnsafeInteger, isJson, nestingDepth, utf8ByteLength, type JsonInput, type JsonValue } from "./json-value.js";
+import {
+	firstUnsafeInteger,
+	nestingDepth,
+	prepareShapeDocument,
+	SHAPE_DIALECT_ID,
+	snapshotJson,
+	toCanonicalJson,
+	utf8ByteLength,
+	type JsonInput,
+	type JsonValue,
+	type PreparedShape,
+} from "@apnex/shape-check";
 import { DESCRIBE_OPERATION, isName } from "./names.js";
 
 /** The limits a declaration keeps to (EM10). */
@@ -59,6 +69,26 @@ export interface HostRefusal {
 /** The input shape of `describe`: an empty object. */
 export const DESCRIBE_INPUT: JsonValue = Object.freeze({ $schema: SHAPE_DIALECT_ID, type: "object", additionalProperties: false }) as JsonValue;
 
+/** The first 128 code points of a string, and whether it was cut (EM9). */
+function cutTo128(text: string): { text: string; truncated: boolean } {
+	const points = Array.from(text);
+	return points.length > 128 ? { text: points.slice(0, 128).join(""), truncated: true } : { text, truncated: false };
+}
+
+/** Compares two strings by Unicode code point, not by UTF-16 code unit; a prefix sorts first. */
+function compareCodePoints(a: string, b: string): number {
+	const x = a[Symbol.iterator]();
+	const y = b[Symbol.iterator]();
+	for (;;) {
+		const p = x.next();
+		const q = y.next();
+		if (p.done) return q.done ? 0 : -1;
+		if (q.done) return 1;
+		const d = (p.value.codePointAt(0) ?? 0) - (q.value.codePointAt(0) ?? 0);
+		if (d !== 0) return d;
+	}
+}
+
 /** A name as a refusal's details hold it: its first 128 code points, and `truncated` when it was cut (EM9). */
 export function nameDetails(name: string): { [name: string]: JsonValue } {
 	const cut = cutTo128(name);
@@ -79,7 +109,7 @@ export function checkDeclarationForm(declaration: OperationDeclaration): void {
 			? "an operation answering in parts is outside the first version (zorg's D15); declare answers \"whole\""
 			: "a declaration's answers is \"whole\" or \"parts\"");
 	}
-	if (!isJson(declaration.input)) throw new TypeError(`the input shape of operation ${JSON.stringify(cutTo128(declaration.name).text)} is not a JSON value`);
+	if (!snapshotJson(declaration.input).ok) throw new TypeError(`the input shape of operation ${JSON.stringify(cutTo128(declaration.name).text)} is not a JSON value`);
 }
 
 /** The description of a set of declared operations, ordered by name in code-point order. */
@@ -90,7 +120,7 @@ export function describe(service: string, operations: Iterable<DescribedOperatio
 
 /** The size of a description answer in canonical JSON. */
 export function descriptionBytes(description: Description): number {
-	return utf8ByteLength(canonicalJson(description as unknown as JsonValue));
+	return utf8ByteLength(toCanonicalJson(description as unknown as JsonValue));
 }
 
 /**
@@ -105,19 +135,22 @@ export function judgeDeclaration(service: string, declaration: OperationDeclarat
 	if (name === DESCRIBE_OPERATION || served.has(name)) {
 		return { accepted: false, refusal: hostRefusal("invalid-name", `The host already serves an operation named ${name}; a name is declared once, and describe is the host's own.`, nameDetails(name)) };
 	}
-	const depth = nestingDepth(declaration.input);
+	const snap = snapshotJson(declaration.input);
+	if (!snap.ok) throw new TypeError(`the input shape of operation ${JSON.stringify(cutTo128(name).text)} is not a JSON value`);
+	const input = snap.value;
+	const depth = nestingDepth(input);
 	if (depth > DECLARATION_LIMITS.shapeDepth) {
 		return { accepted: false, refusal: hostRefusal("shape-too-deep", "An operation's input shape nests more than 20 levels.", { name, depth, limit: DECLARATION_LIMITS.shapeDepth }) };
 	}
-	const prepared = prepareShapeDocument(declaration.input);
+	const prepared = prepareShapeDocument(input);
 	if (!prepared.accepted) {
 		return { accepted: false, refusal: hostRefusal("shape-refused", "shape-check refused the operation's input shape.", { name, problems: prepared.problems as unknown as JsonValue }) };
 	}
-	const unsafe = firstUnsafeInteger(declaration.input);
-	if (unsafe !== undefined) {
-		return { accepted: false, refusal: hostRefusal("unsafe-shape", "An operation's input shape holds an integer more than 9007199254740991 from zero.", { name, pointer: unsafe }) };
+	const unsafe = firstUnsafeInteger(input);
+	if (unsafe !== null) {
+		return { accepted: false, refusal: hostRefusal("unsafe-shape", "An operation's input shape holds an integer more than 9007199254740991 from zero.", { name, pointer: unsafe.pointer }) };
 	}
-	const described: DescribedOperation = { name, input: copyJson(declaration.input), answers: declaration.answers };
+	const described: DescribedOperation = { name, input, answers: declaration.answers };
 	const bytes = descriptionBytes(describe(service, [...declared, described]));
 	if (bytes > DECLARATION_LIMITS.descriptionBytes) {
 		return { accepted: false, refusal: hostRefusal("description-too-large", "The declaration would make the host's description exceed 524288 bytes in canonical JSON.", { name, bytes, limit: DECLARATION_LIMITS.descriptionBytes }) };

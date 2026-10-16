@@ -9,7 +9,7 @@
  * the message itself as the first level it nests at most 30 levels, and every integer in it lies within
  * 9007199254740991 of zero; a request message is also at most 16777216 bytes as JSON in UTF-8.
  */
-import { firstUnsafeInteger, isJson, isJsonObject, nestingDepth, utf8ByteLength, writeJson, type JsonValue } from "./json-value.js";
+import { firstUnsafeInteger, nestingDepth, readPlainJson, toCanonicalJson, utf8ByteLength, type JsonObject, type JsonValue } from "@apnex/shape-check";
 import { invocationOfAttempt, isAttemptId, isInvocationId, isName } from "./names.js";
 import { isRefusalRecord, type RefusalRecord } from "./refusal.js";
 
@@ -107,8 +107,14 @@ const HEAD = ["operationCall", "type", "invocation", "attempt", "operation"];
  * Reads a value as a message of operation-call's format, returning it when it has exactly the form its
  * type names, and undefined otherwise. The attempt must hold the invocation, as EM11 writes it.
  */
-export function readMessage(value: unknown): OperationCallMessage | undefined {
-	if (!isJsonObject(value) || !isJson(value)) return undefined;
+function isJsonObject(value: unknown): value is JsonObject {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function readMessage(rawValue: unknown): OperationCallMessage | undefined {
+	const plain = readPlainJson(rawValue);
+	if (!plain.ok || !isJsonObject(plain.value)) return undefined;
+	const value = plain.value;
 	if (value.operationCall !== 1 || !isInvocationId(value.invocation) || !isAttemptId(value.attempt)) return undefined;
 	if (invocationOfAttempt(value.attempt) !== value.invocation || !isName(value.operation)) return undefined;
 	switch (value.type) {
@@ -137,12 +143,12 @@ export function readMessage(value: unknown): OperationCallMessage | undefined {
  * 30 levels, the message itself the first, and every integer in it lies within 9007199254740991 of zero.
  */
 export function crossesAgp(message: JsonValue): boolean {
-	return nestingDepth(message) <= MESSAGE_LIMITS.depth && firstUnsafeInteger(message) === undefined;
+	return nestingDepth(message) <= MESSAGE_LIMITS.depth && firstUnsafeInteger(message) === null;
 }
 
 /** The size of a message as JSON in UTF-8, as it is sent (EM11). */
 export function messageBytes(message: JsonValue): number {
-	return utf8ByteLength(writeJson(message, false));
+	return utf8ByteLength(toCanonicalJson(message));
 }
 
 /**

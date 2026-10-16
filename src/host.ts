@@ -17,12 +17,11 @@
  * request's source endpoint, pinned to its origin node, under the request's attempt identity.
  */
 import type { AgpNode, EndpointBinding, EndpointName, JsonObject } from "@agp/node";
-import { prepareShapeDocument, type PreparedShape } from "@apnex/shape-check";
+import { observePromises, prepareShapeDocument, readPlainJson, snapshotJson, type JsonInput, type JsonValue, type PreparedShape } from "@apnex/shape-check";
 import { checkDeclarationForm, describe, DESCRIBE_INPUT, hostRefusal, judgeDeclaration, nameDetails, type Description, type DescribedOperation, type HostRefusal, type OperationDeclaration } from "./declarations.js";
-import { copyJson, snapshotJson, type JsonInput, type JsonValue } from "./json-value.js";
 import { crossesAgp, readMessage, writeEnd, type EndContent, type MessageAddress } from "./message-format.js";
 import { DESCRIBE_OPERATION, invocationOfAttempt, isAttemptId, isName } from "./names.js";
-import { inputMisfit, isRefusalRecord, malformedRequest, type RefusalRecord } from "./refusal.js";
+import { inputMisfit, malformedRequest, readRefusalRecord, type RefusalRecord } from "./refusal.js";
 
 /** AGP's context for a delivered request: its message, correlation, source, ingress and session. */
 export type DeliveryContext = Parameters<Parameters<AgpNode["expose"]>[1]>[1]["delivery"];
@@ -91,19 +90,56 @@ interface Served {
  * read once and copied, and what is judged and sent is the copy. Reading a result is part of the operation:
  * a getter or a proxy that throws throws from here, and the caller ends the invocation `operation-failed`.
  */
+/**
+ * Awaits a callback's return value only when it is a native `Promise` (zorg's D54, D55): a non-native
+ * thenable is not awaited. Any synchronous throw, `Proxy` trap throw on `instanceof Promise`, attachment
+ * throw, or rejection has its native promises observed and returns `{ ok: false }`.
+ */
+async function awaitNativePromise(fn: () => unknown): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false }> {
+	let raw: unknown;
+	try {
+		raw = fn();
+	} catch (error) {
+		observePromises(error);
+		return { ok: false };
+	}
+	let native = false;
+	try {
+		native = raw instanceof Promise;
+	} catch (error) {
+		observePromises(error);
+		observePromises(raw);
+		return { ok: false };
+	}
+	if (!native) return { ok: true, value: raw };
+	try {
+		return await (Reflect.apply(Promise.prototype.then, raw, [
+			(resolved: unknown) => ({ ok: true as const, value: resolved }),
+			(error: unknown) => {
+				observePromises(error);
+				return { ok: false as const };
+			},
+		]) as Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false }>);
+	} catch (error) {
+		observePromises(error);
+		observePromises(raw);
+		return { ok: false };
+	}
+}
+
 function resultContent(value: unknown): EndContent {
 	const failed: EndContent = { outcome: "failed", reason: "operation-failed", agpCode: null };
-	if (value === null || typeof value !== "object" || Array.isArray(value)) return failed;
-	const names = Object.keys(value);
+	const reading = readPlainJson(value);
+	if (!reading.ok || reading.value === null || typeof reading.value !== "object" || Array.isArray(reading.value)) return failed;
+	const plain = reading.value as { readonly [name: string]: JsonValue };
+	const names = Object.keys(plain);
 	if (names.length !== 2) return failed;
-	const outcome = (value as { outcome?: unknown }).outcome;
-	if (outcome === "answered" && names.includes("answer")) {
-		const answer = snapshotJson((value as { answer?: unknown }).answer);
-		return answer === undefined ? { outcome: "failed", reason: "answer-not-sendable", agpCode: null } : { outcome: "answered", answer };
+	if (plain.outcome === "answered" && Object.hasOwn(plain, "answer")) {
+		return { outcome: "answered", answer: plain.answer as JsonValue };
 	}
-	if (outcome === "refused" && names.includes("refusal")) {
-		const refusal = snapshotJson((value as { refusal?: unknown }).refusal);
-		return isRefusalRecord(refusal) ? { outcome: "refused", refusal } : failed;
+	if (plain.outcome === "refused" && Object.hasOwn(plain, "refusal")) {
+		const refusal = readRefusalRecord(plain.refusal);
+		return refusal.ok ? { outcome: "refused", refusal: refusal.refusal } : failed;
 	}
 	return failed;
 }
@@ -147,10 +183,17 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 
 	/** Serves one request delivered to an operation's endpoint. */
 	const serve = async (operation: Served, payload: JsonObject, delivery: DeliveryContext, signal: AbortSignal): Promise<void> => {
-		let evidenceAnswer: unknown = null;
+		let evidenceAnswer: JsonValue = null;
 		let evidenceFailed = false;
 		if (evidence !== undefined) {
-			try { evidenceAnswer = await evidence(delivery); } catch { evidenceFailed = true; }
+			const settled = await awaitNativePromise(() => evidence(delivery));
+			if (!settled.ok) {
+				evidenceFailed = true;
+			} else {
+				const plainEvidence = readPlainJson(settled.value);
+				if (!plainEvidence.ok) evidenceFailed = true;
+				else evidenceAnswer = plainEvidence.value;
+			}
 		}
 		const label = delivery.correlationId;
 		const message = readMessage(payload);
@@ -162,16 +205,9 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		if (evidenceFailed) return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
 		const verdict = operation.prepared.judge(message.input);
 		if (verdict.verdict === "misfit") return reply(address, { outcome: "refused", refusal: inputMisfit(operation.name, verdict.misfits) }, delivery);
-		// Running the operation and reading what it returned are one failure boundary (EM11): whatever throws
-		// in either - the operation, a thenable, a getter or a proxy on its result or nested in its refusal -
-		// ends the invocation failed with operation-failed.
-		let content: EndContent;
-		try {
-			const result: unknown = await operation.handler(message.input, Object.freeze({ service, operation: operation.name, invocation: message.invocation, attempt: message.attempt, delivery, evidence: evidenceAnswer, signal }));
-			content = resultContent(result);
-		} catch {
-			content = { outcome: "failed", reason: "operation-failed", agpCode: null };
-		}
+		// Running the operation and reading what it returned as plain data are one failure boundary (EM11; D54, D55).
+		const settled = await awaitNativePromise(() => operation.handler(message.input, Object.freeze({ service, operation: operation.name, invocation: message.invocation, attempt: message.attempt, delivery, evidence: evidenceAnswer, signal })));
+		const content: EndContent = settled.ok ? resultContent(settled.value) : { outcome: "failed", reason: "operation-failed", agpCode: null };
 		return reply(address, content, delivery);
 	};
 
@@ -212,7 +248,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 	const host: OperationHost = Object.freeze({
 		service,
 		declare,
-		description: () => copyJson(description() as unknown as JsonValue) as unknown as Description,
+		description: () => (snapshotJson(description()) as { readonly ok: true; readonly value: JsonValue }).value as unknown as Description,
 		async close(): Promise<void> {
 			closed = true;
 			await queue;

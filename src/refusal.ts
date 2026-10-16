@@ -6,8 +6,7 @@
  * another's refusal passes it on unchanged. operation-call's own codes are `input-misfit`,
  * `malformed-request` and `not-sendable`, none naming any detail. A failure of AGP's is never a refusal.
  */
-import { readPlainJson, type ShapeMisfit } from "@apnex/shape-check";
-import { isJson, isJsonObject, type JsonValue } from "./json-value.js";
+import { readPlainJson, type JsonValue, type ShapeMisfit } from "@apnex/shape-check";
 
 /** A refusal record (EM9). */
 export interface RefusalRecord {
@@ -26,26 +25,9 @@ export type CallRefusalCode = "input-misfit" | "malformed-request" | "not-sendab
 const MISFIT_FIELDS = ["expected", "fit", "keyword", "pointer"];
 const REFUSAL_FIELDS = ["code", "details", "fix", "part", "what", "why"];
 
-/** True when a value is a misfit record of shape-check's SD4: exactly pointer, keyword, expected and fit. */
-function isMisfit(value: unknown): boolean {
-	if (!isJsonObject(value)) return false;
-	const names = Object.keys(value).sort();
-	return names.length === 4 && names.every((n, i) => n === MISFIT_FIELDS[i])
-		&& typeof value.pointer === "string" && typeof value.keyword === "string" && typeof value.fit === "string";
-}
-
-/** True when a value has exactly EM9's form: the six fields, `misfits` only beside them, each of its type. */
+/** True when a value has exactly EM9's form as plain data (zorg's D54, D55). */
 export function isRefusalRecord(value: unknown): value is RefusalRecord {
-	if (!isJsonObject(value) || !isJson(value)) return false;
-	const names = Object.keys(value).filter((n) => n !== "misfits").sort();
-	if (names.length !== REFUSAL_FIELDS.length || !names.every((n, i) => n === REFUSAL_FIELDS[i])) return false;
-	if (!["part", "code", "what", "why", "fix"].every((n) => typeof value[n] === "string")) return false;
-	if (!isJsonObject(value.details)) return false;
-	if (Object.hasOwn(value, "misfits")) {
-		const misfits = value.misfits;
-		if (!Array.isArray(misfits) || !misfits.every(isMisfit)) return false;
-	}
-	return true;
+	return readRefusalRecord(value).ok;
 }
 
 const NAMED_FIELDS = ["part", "code", "what", "why", "fix"];

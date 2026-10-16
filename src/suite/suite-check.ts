@@ -2,7 +2,7 @@
  * The suite's assertions and waits, written without any runtime's test library so the suite stays free
  * of runtime-specific modules (zorg's D31). A failed check throws an Error naming what was expected.
  */
-import { canonicalJson, isJson, type JsonInput } from "../json-value.js";
+import { snapshotJson, toCanonicalJson } from "@apnex/shape-check";
 
 /** Throws unless the condition holds. */
 export function check(condition: unknown, what: string): asserts condition {
@@ -12,7 +12,8 @@ export function check(condition: unknown, what: string): asserts condition {
 /** Writes any value for a message, JSON where it can be. */
 function show(value: unknown): string {
 	try {
-		return isJson(value) ? canonicalJson(value as JsonInput) : String(value);
+		const snap = snapshotJson(value);
+		return snap.ok ? toCanonicalJson(snap.value) : String(value);
 	} catch {
 		return String(value);
 	}
@@ -20,8 +21,10 @@ function show(value: unknown): string {
 
 /** Throws unless two values are the same JSON, compared in canonical JSON, or strictly equal otherwise. */
 export function same(actual: unknown, expected: unknown, what: string): void {
-	const equal = isJson(actual) && isJson(expected)
-		? canonicalJson(actual as JsonInput) === canonicalJson(expected as JsonInput)
+	const a = snapshotJson(actual);
+	const b = snapshotJson(expected);
+	const equal = a.ok && b.ok
+		? toCanonicalJson(a.value) === toCanonicalJson(b.value)
 		: Object.is(actual, expected);
 	if (!equal) throw new Error(`caller suite: expected ${what}: ${show(expected)}, got ${show(actual)}`);
 }

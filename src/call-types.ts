@@ -9,7 +9,7 @@
  * a `proxyCode` a caller across a hop names, and the reasons a hop adds - while operation-call's own caller
  * gives only the call layer's endings (`CallLayerEnding`), so it is assignable to the interface (EM12).
  */
-import type { JsonInput, JsonValue } from "./json-value.js";
+import type { JsonInput, JsonValue } from "@apnex/shape-check";
 import type { RefusalRecord } from "./refusal.js";
 
 /** One invocation, as a caller asks for it. */

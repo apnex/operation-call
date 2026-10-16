@@ -13,7 +13,7 @@
  */
 import type { CallEnding, CallRequest } from "../call-types.js";
 import { createOperationHost, type OperationContext, type OperationHandler, type OperationHost } from "../host.js";
-import type { JsonInput, JsonValue } from "../json-value.js";
+import type { JsonInput, JsonValue } from "@apnex/shape-check";
 import type { RefusalRecord } from "../refusal.js";
 import { systemCallClock } from "../system-ports.js";
 import { check, latch, same, settle, turn, until, watch, type Latch, type Watched } from "./suite-check.js";

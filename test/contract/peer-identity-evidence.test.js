@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createOperationHost } from "@apnex/operation-call";
 import { openTopology, until } from "../support/fixture.js";
-import { ANY, ATTEMPT, openRaw, request } from "../support/raw-requests.js";
+import { ANY, ATTEMPT, INVOCATION, openRaw, request } from "../support/raw-requests.js";
 
 const D = "urn:apnex:shape-check:dialect:1";
 
@@ -47,7 +47,8 @@ test("the operation receives the evidence function's answer unchanged and AGP's 
 	const ending = await topology.caller.invoke({ host: "host-a", service: "svc", operation: "op", input: {}, bound: 1000 });
 	assert.equal(ending.ending, "answered");
 	const [context] = seen;
-	assert.equal(context.evidence, answers[0], "the evidence function's own answer");
+	assert.deepEqual(context.evidence, answers[0], "the evidence function's answer as plain data");
+	assert.ok(Object.isFrozen(context.evidence), "the evidence is deeply frozen");
 	assert.equal(context.delivery, given[0], "the delivery context the evidence function was given");
 	assert.equal(context.delivery.source.originNodeId, "caller");
 	assert.equal(context.delivery.source.endpoint, "operation-call/replies");
@@ -108,4 +109,46 @@ test("an evidence function answering asynchronously is awaited before the operat
 	release();
 	await until(() => evidence !== undefined, "the operation runs");
 	assert.deepEqual(evidence, { kind: "late" });
+});
+
+test("D2-E2, EM11, D54, D55: evidence is read as plain data after awaiting a native Promise only - a non-native thenable, getter, non-plain object, or nested rejected Promise ends operation-failed with zero getter calls and zero unhandled rejections without running the handler, while malformed-request still takes precedence", async (t) => {
+	let getters = 0;
+	let handlerRuns = 0;
+	const cases = [
+		() => ({ get kind() { getters++; return "x"; }, p: Promise.reject(new Error("evidence getter promise")) }),
+		() => ({ then(resolve) { getters++; resolve({ kind: "x" }); }, p: Promise.reject(new Error("evidence thenable promise")) }),
+		() => Object.create({ kind: "x" }),
+		() => ({ kind: "x", p: Promise.reject(new Error("evidence nested promise")) }),
+		() => Promise.resolve({ kind: "x", p: Promise.reject(new Error("async evidence nested promise")) }),
+		() => Promise.reject(Object.assign(new Error("evidence rejected"), { p: Promise.reject(new Error("evidence rejected nested")) })),
+		() => { throw Object.assign(new Error("evidence threw"), { p: Promise.reject(new Error("evidence thrown nested")) }); },
+	];
+	let idx = 0;
+	const unhandled = [];
+	const onUnhandled = (r) => unhandled.push(r);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		const raw = await openRaw(t, {
+			hostOptions: { evidence: () => cases[idx++ % cases.length]() },
+			declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, () => { handlerRuns++; return { outcome: "answered", answer: 1 }; }),
+			endpoints: ["svc/op"],
+		});
+		for (let i = 0; i < cases.length; i++) {
+			const attempt = `${INVOCATION}.000005${String(i).padStart(2, "0")}`;
+			await raw.send("svc/op", request("op", 1, { attempt }), attempt);
+		}
+		const malformedAttempt = `${INVOCATION}.00000599`;
+		await raw.send("svc/op", request("op", 1, { attempt: malformedAttempt, extra: true }), malformedAttempt);
+		await raw.repliesReach(cases.length + 1);
+		for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+		for (const { payload } of raw.replies) {
+			if (payload.attempt === malformedAttempt) assert.equal(payload.outcome, "refused");
+			else assert.deepEqual([payload.outcome, payload.reason, payload.agpCode], ["failed", "operation-failed", null]);
+		}
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.equal(handlerRuns, 0, "the operation handler never ran");
+	assert.equal(getters, 0, "no getter or non-native thenable on evidence was called");
+	assert.deepEqual(unhandled, [], "every rejected promise was observed");
 });

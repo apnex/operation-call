@@ -58,8 +58,8 @@ test("every request gets exactly one end message when the operation throws, reje
 		[() => ({ outcome: "answered" }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
 		[() => ({ outcome: "answered", answer: 1, extra: 2 }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
 		[() => ({ outcome: "done", answer: 1 }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
-		[() => ({ outcome: "answered", answer: undefined }), { outcome: "failed", reason: "answer-not-sendable", agpCode: null }],
-		[() => ({ outcome: "answered", answer: { n: Number.NaN } }), { outcome: "failed", reason: "answer-not-sendable", agpCode: null }],
+		[() => ({ outcome: "answered", answer: undefined }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
+		[() => ({ outcome: "answered", answer: { n: Number.NaN } }), { outcome: "failed", reason: "operation-failed", agpCode: null }],
 		[() => ({ outcome: "answered", answer: { n: 9007199254740992 } }), { outcome: "failed", reason: "answer-not-sendable", agpCode: null }],
 		[() => ({ outcome: "answered", answer: deep }), { outcome: "failed", reason: "answer-not-sendable", agpCode: null }],
 		[() => ({ outcome: "answered", answer: 9007199254740991 }), { outcome: "answered", answer: 9007199254740991 }],
@@ -127,11 +127,11 @@ const thrower = () => { throw new Error("a malformed result"); };
 const MALFORMED_RESULTS = [
 	["a result whose outcome getter throws", () => ({ get outcome() { return thrower(); }, answer: null })],
 	["a result whose answer getter throws", () => ({ outcome: "answered", get answer() { return thrower(); } })],
-	["a proxy whose get trap throws", () => new Proxy({ outcome: "answered", answer: 1 }, { get: thrower })],
+	["a proxy whose getOwnPropertyDescriptor trap throws", () => new Proxy({ outcome: "answered", answer: 1 }, { getOwnPropertyDescriptor: thrower })],
 	["a proxy whose ownKeys trap throws", () => new Proxy({ outcome: "answered", answer: 1 }, { ownKeys: thrower })],
 	["a result whose then getter throws", () => ({ outcome: "answered", answer: 1, get then() { return thrower(); } })],
 	["a refusal whose details getter throws", () => ({ outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", get details() { return thrower(); } } })],
-	["a refusal that is a proxy whose get trap throws", () => ({ outcome: "refused", refusal: new Proxy({ part: "p", code: "c", what: "w", why: "w", fix: "f", details: {} }, { get: thrower }) })],
+	["a refusal that is a proxy whose getOwnPropertyDescriptor trap throws", () => ({ outcome: "refused", refusal: new Proxy({ part: "p", code: "c", what: "w", why: "w", fix: "f", details: {} }, { getOwnPropertyDescriptor: thrower }) })],
 	["a refusal whose misfit record's getter throws", () => ({ outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", details: {}, misfits: [{ pointer: "", keyword: "type", expected: "string", get fit() { return thrower(); } }] } })],
 	["a refusal whose details hold a getter that throws", () => ({ outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", details: { get n() { return thrower(); } } } })],
 	["an answer holding a getter that throws", () => ({ outcome: "answered", answer: { list: [1, { get x() { return thrower(); } }] } })],
@@ -152,24 +152,53 @@ test("a getter or a proxy that throws on what an operation returned, or in its r
 	}
 });
 
-test("a result read through getters is read once: what the host judges is what it sends", async (t) => {
-	let outcomeReads = 0;
-	let answerReads = 0;
-	const raw = await openRaw(t, { declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, () => ({
-		get outcome() { return ++outcomeReads === 1 ? "answered" : "refused"; },
-		get answer() { return ++answerReads === 1 ? { n: 1 } : { n: 9007199254740992 }; },
-	})), endpoints: ["svc/op"] });
-	await raw.send("svc/op", request("op", 0));
-	await raw.repliesReach(1);
-	assert.deepEqual(raw.replies[0].payload, end({ outcome: "answered", answer: { n: 1 } }));
-	assert.deepEqual([outcomeReads, answerReads], [1, 1]);
+test("D2-E2, D54, D55: src/json-value.ts is removed, and what an operation handler returns is read as plain data through shape-check - a getter, non-native thenable, inherited, non-enumerable or symbol property, or nested rejected Promise ends operation-failed with zero getter calls and zero unhandled rejections", async (t) => {
+	const fs = await import("node:fs");
+	const path = await import("node:path");
+	const { fileURLToPath } = await import("node:url");
+	assert.equal(fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "json-value.ts")), false, "src/json-value.ts does not exist");
+	let getters = 0;
+	const sym = Symbol("s");
+	const nonEnum = { outcome: "answered", answer: 1 };
+	Object.defineProperty(nonEnum, "hidden", { value: 1, enumerable: false });
+	const cases = [
+		() => ({ get outcome() { getters++; return "answered"; }, answer: 1 }),
+		() => ({ outcome: "answered", get answer() { getters++; return { n: 1 }; } }),
+		() => ({ outcome: "answered", answer: { get n() { getters++; return 7; } } }),
+		() => ({ outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", details: { get n() { getters++; return 1; } } } }),
+		() => ({ then(resolve) { getters++; resolve({ outcome: "answered", answer: 1 }); }, p: Promise.reject(new Error("thenable promise")) }),
+		() => Object.create({ outcome: "answered", answer: 1 }),
+		() => ({ outcome: "answered", answer: 1, [sym]: 1 }),
+		() => nonEnum,
+		() => ({ outcome: "answered", answer: { p: Promise.reject(new Error("answer nested promise")) } }),
+		() => Promise.resolve({ outcome: "answered", answer: { p: Promise.reject(new Error("async answer nested promise")) } }),
+		() => Promise.reject(Object.assign(new Error("rejected"), { p: Promise.reject(new Error("rejected nested promise")) })),
+		() => { throw Object.assign(new Error("threw"), { p: Promise.reject(new Error("thrown nested promise")) }); },
+	];
+	const unhandled = [];
+	const onUnhandled = (r) => unhandled.push(r);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		const raw = await openRaw(t, { declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, (input) => cases[input]()), endpoints: ["svc/op"] });
+		for (let i = 0; i < cases.length; i++) {
+			const attempt = `${INVOCATION}.000003${String(i).padStart(2, "0")}`;
+			await raw.send("svc/op", request("op", i, { attempt }), attempt);
+		}
+		await raw.repliesReach(cases.length);
+		for (let i = 0; i < 30; i++) await turn();
+		for (const { payload } of raw.replies) {
+			assert.deepEqual(payload, end({ outcome: "failed", reason: "operation-failed", agpCode: null }, payload.attempt));
+		}
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.equal(getters, 0, "no getter or non-native thenable was invoked");
+	assert.deepEqual(unhandled, [], "every rejected promise was observed");
 });
 
-test("an object reached by two paths in an answer or a refusal is read once: its first snapshot is sent in every place, and a second read never happens", async (t) => {
-	let answerReads = 0;
-	let refusalReads = 0;
-	const sharedAnswer = { get n() { return ++answerReads === 1 ? 7 : Number.NaN; } };
-	const sharedDetails = { get n() { if (++refusalReads > 1) throw new Error("a second read"); return 1; } };
+test("a plain object reached by two paths in an answer or a refusal is copied once and sent in every place", async (t) => {
+	const sharedAnswer = { n: 7 };
+	const sharedDetails = { n: 1 };
 	const refusal = { part: "p", code: "c", what: "w", why: "w", fix: "f", details: { first: sharedDetails, list: [sharedDetails, { again: sharedDetails }] } };
 	const raw = await openRaw(t, { declare: (host) => host.declare({ name: "op", input: ANY, answers: "whole" }, (input) => input === 0
 		? { outcome: "answered", answer: { first: sharedAnswer, second: [sharedAnswer, sharedAnswer] } }
@@ -179,9 +208,8 @@ test("an object reached by two paths in an answer or a refusal is read once: its
 	const second = `${INVOCATION}.00000201`;
 	await raw.send("svc/op", request("op", 1, { attempt: second }), second);
 	await raw.repliesReach(2);
-	assert.deepEqual(raw.replies[0].payload, end({ outcome: "answered", answer: { first: { n: 7 }, second: [{ n: 7 }, { n: 7 }] } }), "the answer, not answer-not-sendable");
-	assert.deepEqual(raw.replies[1].payload, end({ outcome: "refused", refusal: { ...refusal, details: { first: { n: 1 }, list: [{ n: 1 }, { again: { n: 1 } }] } } }, second), "the refusal, not operation-failed");
-	assert.deepEqual([answerReads, refusalReads], [1, 1], "each getter read exactly once");
+	assert.deepEqual(raw.replies[0].payload, end({ outcome: "answered", answer: { first: { n: 7 }, second: [{ n: 7 }, { n: 7 }] } }));
+	assert.deepEqual(raw.replies[1].payload, end({ outcome: "refused", refusal: { ...refusal, details: { first: { n: 1 }, list: [{ n: 1 }, { again: { n: 1 } }] } } }, second));
 });
 
 test("over AGP, a result whose inspection throws ends the caller's invocation unknown with operation-failed and no AGP code, before its bound", async (t) => {
