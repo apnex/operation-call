@@ -49,6 +49,7 @@ The trait column names any trait a system takes on by using the capability.
 | `advertiser-instance-select` | carries from agp | none | A caller may name the instance it means; operation-call passes it on and never chooses one. | none |
 
 operation-call holds nothing across a restart, coordinates no actors and contains no model, so none of its capabilities brings a trait.
+Under zorg's `D51` and `D59` (`upstream/agp-reply-isolation-reply.md`), the host pins every reply to the request's origin node, and once AGP lands the direct-peer send restriction and `DeliveryContext` admission association, `createOperationHost` carries that restriction from `DeliveryContext` (never from the plain-JSON `evidence` value given to the operation handler) on every reply branch - answers, `malformed-request` and `input-misfit` refusals, `<service>/describe` replies, `operation-failed` endings, and the `answer-not-sendable` failed-end fallback - never downgrading to an unrestricted send when authority is absent.
 
 ---
 
