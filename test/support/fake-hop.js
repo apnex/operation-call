@@ -20,7 +20,7 @@
 // flight - so it ends `hop-stalled` only when the far side has gone quiet for a whole bound.
 import { openTopology } from "./fixture.js";
 
-/** True for a bound EM12 allows; any other is handed on unchanged, for the call layer to throw as it does. */
+/** True for a bound EM12 allows; any other is handed on as read, for the call layer to throw as it does. */
 const validBound = (bound) => Number.isInteger(bound) && bound >= 1 && bound <= 2147483647;
 
 /** The hop's caller, in front of operation-call's own. */
@@ -30,26 +30,33 @@ function hopCaller(inner, clock, allowanceMs, held) {
 		invoke(call) {
 			// The client half's bound starts as it is invoked; the far side's ends the allowance sooner (PX5).
 			const start = clock.now();
-			if (call === null || typeof call !== "object" || !validBound(call.bound)) return inner.invoke(call);
-			const allowance = Math.min(allowanceMs, Math.floor(call.bound / 2));
-			const invocation = call.invocation === undefined ? inner.newInvocation() : call.invocation;
-			const farBound = Math.floor(start + call.bound - allowance - clock.now());
-			if (farBound < 1) {
-				return Promise.resolve(Object.freeze({ ending: "not-delivered", invocation, attempt: null, operation: call.operation, agpCode: null, proxyCode: "deadline-passed", earlierAttemptsUncertain: call.repeat === true }));
+			if (call === null || typeof call !== "object") return inner.invoke(call);
+			// Each field of the request is read once, as a client half reads it (EM12), and what is given is passed on.
+			const read = {};
+			for (const name of ["host", "service", "operation", "input", "bound", "invocation", "repeat", "signal", "onPart"]) {
+				const value = call[name];
+				if (value !== undefined) read[name] = value;
 			}
-			const parts = typeof call.onPart === "function";
-			let deadline = start + call.bound;
+			if (!validBound(read.bound)) return inner.invoke(read);
+			const allowance = Math.min(allowanceMs, Math.floor(read.bound / 2));
+			const invocation = read.invocation === undefined ? inner.newInvocation() : read.invocation;
+			const farBound = Math.floor(start + read.bound - allowance - clock.now());
+			if (farBound < 1) {
+				return Promise.resolve(Object.freeze({ ending: "not-delivered", invocation, attempt: null, operation: read.operation, agpCode: null, proxyCode: "deadline-passed", earlierAttemptsUncertain: read.repeat === true }));
+			}
+			const parts = typeof read.onPart === "function";
+			let deadline = start + read.bound;
 			let farEnded = false;
 			/** A sign of life the stand-in hands across moves its deadline a bound on. */
 			const lived = () => {
 				try {
-					deadline = clock.now() + call.bound;
+					deadline = clock.now() + read.bound;
 				} catch {
 					// A reading that throws moves nothing.
 				}
 			};
-			const onPart = parts ? (part) => { lived(); return call.onPart(part); } : undefined;
-			const far = inner.invoke({ ...call, invocation, bound: farBound, ...(parts ? { onPart } : {}) });
+			const onPart = parts ? (part) => { lived(); return read.onPart(part); } : undefined;
+			const far = inner.invoke({ ...read, invocation, bound: farBound, ...(parts ? { onPart } : {}) });
 			return new Promise((resolve, reject) => {
 				let ended = false;
 				let attempt = null;
@@ -71,7 +78,7 @@ function hopCaller(inner, clock, allowanceMs, held) {
 					cancel();
 				};
 				const stalled = () => Object.freeze({
-					ending: "unknown", invocation, attempt, operation: call.operation, reason: "hop-stalled", agpCode: null, deliveryReport: null,
+					ending: "unknown", invocation, attempt, operation: read.operation, reason: "hop-stalled", agpCode: null, deliveryReport: null,
 				});
 				const wake = () => {
 					if (ended) return;

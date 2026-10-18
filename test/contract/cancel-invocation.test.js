@@ -8,7 +8,7 @@
 // recorded or finished, or with a field missing or added, discarded unanswered with the evidence port not
 // asked. And on a controlled caller node: an abort after admission submitting one cancel and fixing the
 // deadline, the call then ending by the host's end, or a bound after its last sign of life while the host
-// keeps sending alive; an abort between admission and its receipt submitting the cancel when the receipt
+// keeps sending alive, which is one bound after an abort at that moment; an abort between admission and its receipt submitting the cancel when the receipt
 // arrives; an abort before admission ending not delivered with ABORTED and submitting nothing; an abort after
 // the ending changing nothing; a call accepting parts ending at its deadline or with part-missing submitting
 // one cancel, its admission observed only after the ending included; and an abort followed by the deadline
@@ -148,7 +148,7 @@ test("caller: an abort after admission submits one cancel, pinned and labelled a
 	}
 });
 
-test("caller: from an abort the deadline stands where it is: a cancelled call ends a bound after its last sign of life though the host keeps sending alive, and a later part is still given", async () => {
+test("caller: from an abort the deadline stands where it is: a cancelled call ends a bound after its last sign of life, one bound after an abort at that moment, though the host keeps sending alive, and a later part is still given", async () => {
 	const t = await controlledCaller();
 	const controller = new AbortController();
 	const parts = [];
@@ -169,6 +169,24 @@ test("caller: from an abort the deadline stands where it is: a cancelled call en
 	assert.deepEqual([call.value.ending, call.value.reason], ["unknown", "bound-passed"], "ended at 140, the alive and part after the abort moving nothing");
 	assert.deepEqual(parts.map((p) => p.answer), ["late"], "the part after the abort still given to onPart");
 	assert.equal(t.sends.filter((s) => s.payload.type === "cancel").length, 1, "one cancel, though the call then ended at its deadline");
+	// An abort at the moment of the last sign of life ends the call exactly one bound after the abort.
+	const at = await controlledCaller();
+	const stop = new AbortController();
+	const exact = watch(at.caller.invoke({ host: "host-a", service: "svc", operation: "op", input: {}, bound: 100, signal: stop.signal, onPart: () => undefined }));
+	await turns();
+	at.sends[0].outcome.resolve({ messageId: "m1" });
+	at.clock.advance(50);
+	await deliverTo(at, { type: "alive" });
+	stop.abort();
+	for (let step = 0; step < 3; step++) {
+		at.clock.advance(30);
+		await deliverTo(at, { type: "alive" });
+	}
+	at.clock.advance(9);
+	assert.equal(exact.settled, false, "at 149 the call waits, though the host kept sending alive after the abort");
+	at.clock.advance(1);
+	await turns();
+	assert.deepEqual([exact.value.ending, exact.value.reason], ["unknown", "bound-passed"], "ended at 150, one bound after the abort at 50");
 });
 
 test("caller: an abort between admission and its receipt submits the cancel when the receipt arrives; an abort before admission ends not delivered with ABORTED and submits nothing", async () => {

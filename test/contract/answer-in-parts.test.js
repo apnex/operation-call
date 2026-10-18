@@ -8,13 +8,15 @@
 // each resolving true when admitted and false when refused, not plain JSON, nesting past AGP's depth, or called
 // once the signal fired or the end was decided; parts sent to a request carrying no `aliveWithinMs`, whose end
 // holds no `parts`; a refused part and a refused alive ending the invocation failed with answer-not-sendable,
-// and an alive refused after the end changing nothing; the end waiting for the last submitted part, counting
-// the admitted ones on every outcome, a malformed-request refusal holding none; the host's liveness and its
+// a held part refused once the operation returned, or once a cancel fired and it returned, so too, and an
+// alive refused after the end changing nothing; the end waiting for the last submitted part, counting
+// the admitted ones on every outcome, one or none, a malformed-request refusal holding none; the host's liveness and its
 // alive, counted from the request's record, an alive read just before, at and after the liveness deadline with
 // its timer held, the host's alive going on while the end waits; an alive reaching the host while the evidence
 // port is held; and the host's record and timers gone once the last send settled, and on closing.
 // And on a controlled caller node: `onPart` read once, the time its getter takes spent from the bound, and one
-// not a function thrown; `aliveWithinMs` for bounds of 1, 2, 3 and 2147483647; the deadline moved by each part
+// not a function thrown; `aliveWithinMs` for bounds of 1, 2, 3 and 2147483647; each part given to `onPart`
+// synchronously as its message is taken, never awaited; the deadline moved by each part
 // and alive, and one read just before, at and after it with its timer held; the caller's alive every
 // `aliveWithinMs` whatever it took, one from a timer that woke late, and one AGP refuses changing nothing; a
 // lower sequence discarded and counted, a higher one, and an end counting other than the parts taken, ending
@@ -144,6 +146,35 @@ test("host: a cancel, and in turn an end decided, while one part's admission is 
 	}
 });
 
+test("host: a held part refused once the operation has returned, and in turn once a cancel fired and it returned, ends the invocation failed with answer-not-sendable and AGP's code, its signal fired, the operation's answer discarded", async () => {
+	for (const how of ["return", "cancel then return"]) {
+		const h = await controlledHost();
+		let signal;
+		let held;
+		await h.declare("emit", async (_input, c) => {
+			signal = c.signal;
+			held = watch(c.part("held"));
+			if (how === "cancel then return") await new Promise((resolve) => c.signal.addEventListener("abort", resolve, { once: true }));
+			return { outcome: "answered", answer: "incomplete" };
+		}, "parts");
+		h.fate.decide = (s) => (s.payload.type === "part" ? "hold" : "admit");
+		const a = newAttempt();
+		const served = watch(h.deliver("emit", requestOf(a, "emit", {}, 100)));
+		await turns();
+		if (how === "cancel then return") await h.deliver("emit", controlOf("cancel", a, "emit"));
+		await turns();
+		assert.equal(served.settled, false, `${how}: the end waits for the held part`);
+		assert.equal(h.sent("end", a.attempt).length, 0);
+		h.sent("part", a.attempt)[0].refuse("MESSAGE_TOO_LARGE");
+		await turns();
+		assert.deepEqual([held.settled, held.value], [true, false], `${how}: the refused part resolves false`);
+		assert.equal(signal.aborted, true, `${how}: the invocation's signal fired`);
+		assert.equal(served.settled, true);
+		assert.equal(h.sent("end", a.attempt).length, 1, `${how}: one end`);
+		assert.deepEqual(endOf(h, a.attempt), { operationCall: 1, type: "end", invocation: a.invocation, attempt: a.attempt, operation: "emit", outcome: "failed", reason: "answer-not-sendable", agpCode: "MESSAGE_TOO_LARGE", parts: 0 }, `${how}: the operation's answer discarded`);
+	}
+});
+
 test("host: parts are sent to a request carrying no aliveWithinMs, whose end holds no parts; part after the end resolves false", async () => {
 	const h = await controlledHost();
 	let kept;
@@ -175,6 +206,13 @@ test("host: every end answering a request with aliveWithinMs holds parts, whatev
 		const a = newAttempt();
 		await h.deliver(operation, requestOf(a, operation, {}, 50));
 		assert.deepEqual([endOf(h, a.attempt).outcome, endOf(h, a.attempt).parts], [outcome, 0], operation);
+	}
+	await h.declare("refuses-after", async (_input, c) => { assert.equal(await c.part("one"), true); return { outcome: "refused", refusal: REFUSAL }; }, "parts");
+	await h.declare("throws-after", async (_input, c) => { assert.equal(await c.part("one"), true); throw new Error("fails"); }, "parts");
+	for (const [operation, outcome] of [["refuses-after", "refused"], ["throws-after", "failed"]]) {
+		const a = newAttempt();
+		await h.deliver(operation, requestOf(a, operation, {}, 50));
+		assert.deepEqual([endOf(h, a.attempt).outcome, endOf(h, a.attempt).parts], [outcome, 1], `${operation}: the admitted part counted`);
 	}
 	const m = newAttempt();
 	await h.deliver("refuses", { ...requestOf(m, "refuses", {}, 50), extra: 1 });
@@ -420,6 +458,23 @@ test("caller: each part and alive taken before the deadline moves it a bound on;
 			}
 		}
 	}
+});
+
+test("caller: each part taken is given to onPart at once, synchronously as its message is taken, and never awaited", async () => {
+	const t = await controlledCaller();
+	const parts = [];
+	const call = watch(t.caller.invoke({ host: "host-a", service: "svc", operation: "op", input: {}, bound: 100, onPart: (p) => { parts.push(p); return new Promise(() => undefined); } }));
+	await turns();
+	t.sends[0].outcome.resolve({ messageId: "m1" });
+	await turns();
+	for (const sequence of [1, 2]) {
+		const taking = deliverTo(t, { type: "part", sequence, answer: sequence });
+		assert.equal(parts.length, sequence, `part ${sequence} given to onPart before the reply endpoint's handler returned`);
+		await taking;
+	}
+	await deliverTo(t, { type: "end", outcome: "answered", answer: "done", parts: 2 });
+	await turns();
+	assert.deepEqual([call.value?.ending, call.value?.answer], ["answered", "done"], "an onPart whose promise never settles was never awaited");
 });
 
 test("caller: the caller submits an alive each aliveWithinMs since its request or its last alive, whatever it took, one from a timer that woke late; one AGP refuses changes nothing", async () => {

@@ -19,7 +19,7 @@ function validCall(c: CaseContext): { [name: string]: unknown } {
  * the promise invoke gives rejecting, as operation-call's caller's does, never a throw as invoke is called;
  * then that the valid call itself is sent, so the count the check reads moves when something is sent.
  */
-async function checkProgrammingErrors(c: CaseContext, changes: readonly (readonly [string, { [name: string]: unknown }])[], kind: RangeErrorConstructor | TypeErrorConstructor): Promise<void> {
+export async function checkProgrammingErrors(c: CaseContext, changes: readonly (readonly [string, { [name: string]: unknown }])[], kind: RangeErrorConstructor | TypeErrorConstructor): Promise<void> {
 	const before = c.hooks.requests();
 	for (const [what, change] of changes) {
 		let error: unknown;

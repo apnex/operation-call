@@ -267,9 +267,12 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		}
 	};
 
-	/** Selects a failure for an invocation whose part or alive could not be sent, and fires its signal (EM11). */
-	const selectFailure = (record: Recorded, agpCode: string | null): void => {
-		if (record.failure !== undefined || record.endDecided) return;
+	/**
+	 * Selects a failure for an invocation whose part or alive could not be sent, and fires its signal (EM11).
+	 * A refused part fails it even once the end is decided, since the end waits for that part; an alive refused then changes nothing.
+	 */
+	const selectFailure = (record: Recorded, agpCode: string | null, unsent: "part" | "alive"): void => {
+		if (record.failure !== undefined || (unsent === "alive" && record.endDecided)) return;
 		record.failure = { outcome: "failed", reason: "answer-not-sendable", agpCode };
 		record.controller.abort(new Error("a part or an alive of the invocation could not be sent"));
 		record.fail();
@@ -323,7 +326,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 				Promise.resolve(sendTo(address.operation, to, writeAlive(address) as unknown as JsonValue)).catch((error: unknown) => {
 					// An alive refused before the end is decided ends the invocation failed; after it, nothing.
 					const code = (error as { code?: unknown } | null)?.code;
-					selectFailure(record, typeof code === "string" ? code : null);
+					selectFailure(record, typeof code === "string" ? code : null, "alive");
 				});
 			}
 			try {
@@ -464,7 +467,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		const next = record.queue.shift();
 		if (next === undefined) return;
 		const failNow = (): void => {
-			selectFailure(record, null);
+			selectFailure(record, null, "part");
 			next.resolve(false);
 			flush(record);
 		};
@@ -482,7 +485,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			next.resolve(true);
 		}, (error: unknown) => {
 			const code = (error as { code?: unknown } | null)?.code;
-			selectFailure(record, typeof code === "string" ? code : null);
+			selectFailure(record, typeof code === "string" ? code : null, "part");
 			next.resolve(false);
 			flush(record);
 		}).finally(() => {

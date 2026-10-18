@@ -7,10 +7,13 @@
  * ends at its deadline takes a hop's allowance as `runOutBound` does: nothing may end before the allowance's
  * edge, and the ending is `bound-passed`.
  */
+import type { AgpNode } from "@agp/node";
 import type { AnswerPart, CallEnding, CallRequest } from "../call-types.js";
 import type { JsonValue } from "@apnex/shape-check";
+import { REPLY_ENDPOINT, writeAlive, writePart } from "../message-format.js";
+import { checkProgrammingErrors } from "./caller-observable-cases.js";
 import { check, same, settle, until, watch, type Watched } from "./suite-check.js";
-import { checkEndingFields, discardedCount, hopAllowance, inCase, SCRIPTED, type CaseContext } from "./suite-support.js";
+import { checkEndingFields, discardedCount, hopAllowance, inCase, SCRIPTED, SERVICE, type CaseContext } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 /** A call accepting parts: its ending watched, and every part given to `onPart`, in order. */
@@ -71,7 +74,7 @@ async function runOutDeadline(c: CaseContext, call: Watched<CallEnding>, now: nu
 
 export const answerInPartsCases: SuiteCase[] = [
 	{
-		name: "parts are given to onPart in order and synchronously, each deeply frozen, before the end that counts them decides the ending",
+		name: "parts are given to onPart in order, each deeply frozen, every one before the end that counts them decides the ending",
 		run: (h) => inCase(h, {}, async (c) => {
 			const answers: JsonValue[] = ["a", { b: [1, { c: true }] }, 3];
 			const p = partsCall(c, { operation: "stream", input: { parts: answers } });
@@ -204,8 +207,81 @@ export const answerInPartsCases: SuiteCase[] = [
 			const rejecting = partsCall(c, { operation: "stream", input: { parts: [1, 2] } }, () => Promise.reject(new Error("onPart rejects")));
 			await until(rejecting.call.settled, "the call whose onPart rejects ends");
 			same(rejecting.call.value()?.ending, "answered", "answered though onPart's promise rejected");
+			const pending = partsCall(c, { operation: "stream", input: { parts: [1, 2] } }, () => new Promise(() => undefined));
+			await until(pending.call.settled, "the call whose onPart never settles ends");
+			same(pending.call.value()?.ending, "answered", "answered though onPart's promise never settles: onPart is never awaited");
+			same(pending.parts.length, 2, "the part after it still given");
 			await settle();
 			same(c.hooks.unhandled().length, 0, "no rejection or exception left unhandled");
+		}),
+	},
+	{
+		name: "an onPart that is given and is not a function throws a TypeError, and nothing is sent; one given through a getter is read once, after the bound has started",
+		run: (h) => inCase(h, {}, async (c) => {
+			await checkProgrammingErrors(c, [null, 1, {}, "f"].map((onPart) => [`an onPart of ${JSON.stringify(onPart)}`, { onPart }] as const), TypeError);
+			const bound = 1000;
+			let reads = 0;
+			const request = {
+				host: c.a.nodeId, service: SERVICE, operation: SCRIPTED, input: { messages: [WAIT] }, bound,
+				get onPart(): (part: AnswerPart) => void {
+					reads++;
+					c.hooks.moveCallClock(300);
+					return () => undefined;
+				},
+			};
+			const call = watch(c.session.caller.invoke(request as never));
+			await until(() => c.a.holds.length === 1, "the scripted host has the request");
+			same(reads, 1, "onPart read exactly once");
+			await runOutDeadline(c, call, 300, bound, bound, "a call whose onPart getter took 300 ms of its bound");
+			c.a.holds[0]?.release();
+		}),
+	},
+	{
+		name: "a part or an alive from another node or another endpoint is discarded: it is given to no onPart and moves no deadline",
+		run: (h) => inCase(h, {}, async (c) => {
+			const bound = 1000;
+			const p = partsCall(c, { operation: SCRIPTED, bound, input: { messages: [WAIT] } });
+			await until(() => c.a.holds.length === 1, "the scripted host has the request");
+			const attempt = scriptedAttempt(c) as string;
+			const address = { invocation: attempt.split(".")[0] as string, attempt, operation: SCRIPTED };
+			// Forged at a moment that, were it taken, would move the deadline past the bound.
+			const now = Math.floor((bound - hopAllowance(c.harness, bound)) / 2);
+			c.hooks.advanceCallClock(now);
+			await settle();
+			const toCaller = { destinationSelector: { originNodeId: c.session.callerNodeId as never, mode: "pinned" as const }, correlationId: attempt as never };
+			const forge = async (node: AgpNode, from: string, message: unknown): Promise<void> => {
+				await node.send(from as never, REPLY_ENDPOINT as never, message as never, toCaller);
+			};
+			const before = discardedCount(c);
+			const [ha, hb] = c.session.hosts;
+			for (const message of [writePart(address, 1, "forged"), writeAlive(address)]) {
+				await forge(hb.node, `${SERVICE}/${SCRIPTED}`, message);
+				await forge(ha.node, `${SERVICE}/echo`, message);
+			}
+			await settle(40);
+			same(p.parts.length, 0, "no forged part given to onPart");
+			const after = discardedCount(c);
+			if (before !== undefined && after !== undefined) same(after - before, 4, "each forged part and alive discarded and counted");
+			await runOutDeadline(c, p.call, now, bound, bound, "a call whose only signs of life were forged");
+			c.a.holds[0]?.release();
+		}),
+	},
+	{
+		name: "a whole operation called with onPart is kept past its bound by alive going both ways, its signal never firing, and its end counting no part decides",
+		run: (h) => inCase(h, {}, async (c) => {
+			const p = partsCall(c, { operation: "hold", bound: 1000 });
+			await until(() => c.a.holds.length === 1, "the whole operation runs");
+			const attempt = c.a.runs[0]?.attempt as string;
+			for (let step = 0; step < 10; step++) {
+				c.hooks.advanceCallClock(250);
+				await settle();
+			}
+			check(!p.call.settled(), "after 2500 ms, past twice the bound, the host's alive kept the call");
+			check(!c.a.aborted.includes(attempt), "the caller's alive kept the host's liveness: the operation's signal never fired");
+			c.a.holds[0]?.release();
+			await until(p.call.settled, "the whole operation answers");
+			same(p.call.value()?.ending, "answered", "answered by its end, which counts no part");
+			same(p.parts.length, 0, "no part");
 		}),
 	},
 ];
