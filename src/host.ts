@@ -3,10 +3,10 @@
  * endpoint `<service>/<operation>`, and give every request exactly one end message, even when the operation
  * fails.
  *
- * For each request as it arrives, the host first asks the evidence function the host supplied (in zorg,
- * caller-identity's answer). It then reads the request: one that breaks EM11's form, or names an operation
- * other than its endpoint's, is refused as `malformed-request` when its correlation label is an attempt
- * identity, and discarded otherwise. Input that does not fit the declared shape is refused as `input-misfit`
+ * For each request as it arrives, the host reads it and records it when well formed (below), then asks the
+ * evidence function the host supplied (in zorg, caller-identity's answer) before acting on it: a request that
+ * breaks EM11's form, or names an operation other than its endpoint's, is then refused as `malformed-request`
+ * when its correlation label is an attempt identity, and discarded otherwise. Input that does not fit the declared shape is refused as `input-misfit`
  * with shape-check's misfit records unchanged, before the operation runs. The operation answers or refuses;
  * one that throws, or returns what is neither an answer nor a refusal in EM9's form, ends `failed` with
  * `operation-failed`, as does a request for which the evidence function fails. Reading what the operation

@@ -2,7 +2,8 @@
 // is calling (zorg's target, EM13; zorg's D26, D31).
 //
 // The host asks the evidence function the host supplied - in zorg, caller-identity's answer - for each
-// request as it arrives, before anything else is done with it, giving it AGP's delivery context; the
+// request as it arrives, before acting on it, giving it AGP's delivery context (the host reads and records a
+// request first, which answer-in-parts.test.js and cancel-invocation.test.js observe, EM11); the
 // operation receives that answer as its evidence, and AGP's delivery context as AGP gave it. Cases: the
 // order of asking, for a request that runs, one that misfits and one that is malformed; the context and the
 // answer unchanged; no function, giving null; a function that throws or whose promise rejects, ending the
@@ -15,7 +16,7 @@ import { ANY, ATTEMPT, INVOCATION, openRaw, request } from "../support/raw-reque
 
 const D = "urn:apnex:shape-check:dialect:1";
 
-test("the host asks the evidence function for each request as it arrives, before reading it, judging its input or running the operation", async (t) => {
+test("the host asks the evidence function for each request as it arrives, before judging its input, answering it malformed or running the operation", async (t) => {
 	const events = [];
 	const raw = await openRaw(t, {
 		hostOptions: { evidence: (delivery) => { events.push(["evidence", delivery.messageId]); return { kind: "fixture", node: delivery.source.originNodeId }; } },
