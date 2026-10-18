@@ -14,6 +14,10 @@
 // A reading that throws shows nothing passed, so the ending read decides, and the timer's cancellation comes
 // after the ending is settled, so its failure changes nothing (zorg's EM12). A hop that is `held` carries no
 // ending at all, so every call that ends at its bound ends `hop-stalled`: the case the suite must refuse.
+// A call accepting parts (zorg's D64; operation-proxy's PX4, PX5 as Delta 4's stage 6 has them): the stand-in's
+// own deadline is a bound on signs of life, moved a bound on by each part it hands to the caller's `onPart` and
+// by each `alive` it writes the caller - one whenever half the far side's bound passes while the far call is in
+// flight - so it ends `hop-stalled` only when the far side has gone quiet for a whole bound.
 import { openTopology } from "./fixture.js";
 
 /** True for a bound EM12 allows; any other is handed on unchanged, for the call layer to throw as it does. */
@@ -33,17 +37,31 @@ function hopCaller(inner, clock, allowanceMs, held) {
 			if (farBound < 1) {
 				return Promise.resolve(Object.freeze({ ending: "not-delivered", invocation, attempt: null, operation: call.operation, agpCode: null, proxyCode: "deadline-passed", earlierAttemptsUncertain: call.repeat === true }));
 			}
-			const far = inner.invoke({ ...call, invocation, bound: farBound });
-			const deadline = start + call.bound;
+			const parts = typeof call.onPart === "function";
+			let deadline = start + call.bound;
+			let farEnded = false;
+			/** A sign of life the stand-in hands across moves its deadline a bound on. */
+			const lived = () => {
+				try {
+					deadline = clock.now() + call.bound;
+				} catch {
+					// A reading that throws moves nothing.
+				}
+			};
+			const onPart = parts ? (part) => { lived(); return call.onPart(part); } : undefined;
+			const far = inner.invoke({ ...call, invocation, bound: farBound, ...(parts ? { onPart } : {}) });
 			return new Promise((resolve, reject) => {
 				let ended = false;
 				let attempt = null;
 				let timer;
+				let aliveTimer;
 				const cancel = () => {
-					try {
-						timer?.cancel();
-					} catch {
-						// A timer that still runs finds the call ended.
+					for (const pending of [aliveTimer, timer]) {
+						try {
+							pending?.cancel();
+						} catch {
+							// A timer that still runs finds the call ended.
+						}
 					}
 				};
 				const end = (ending) => {
@@ -55,8 +73,29 @@ function hopCaller(inner, clock, allowanceMs, held) {
 				const stalled = () => Object.freeze({
 					ending: "unknown", invocation, attempt, operation: call.operation, reason: "hop-stalled", agpCode: null, deliveryReport: null,
 				});
-				timer = clock.schedule(Math.max(0, deadline - clock.now()), () => end(stalled()));
+				const wake = () => {
+					if (ended) return;
+					let remaining;
+					try {
+						remaining = deadline - clock.now();
+					} catch {
+						remaining = 0;
+					}
+					if (remaining <= 0) return end(stalled());
+					timer = clock.schedule(Math.ceil(remaining), wake);
+				};
+				timer = clock.schedule(Math.max(0, deadline - clock.now()), wake);
+				if (parts) {
+					const every = Math.max(1, Math.floor(farBound / 2));
+					const beat = () => {
+						if (ended || farEnded) return;
+						lived();
+						aliveTimer = clock.schedule(every, beat);
+					};
+					aliveTimer = clock.schedule(every, beat);
+				}
 				far.then((ending) => {
+					farEnded = true;
 					attempt = ending.attempt;
 					if (held) return;
 					setImmediate(() => {

@@ -27,6 +27,8 @@ export async function controlledCaller({ clock = createManualCallClock(0), ident
 	const caller = await createCaller({ node, clock, identities: identities ?? { wallTimeMs: () => 1791540000000, randomHex: (d) => (++n).toString(16).padStart(d, "0") } });
 	return {
 		caller, clock, sends,
+		/** The reply endpoint's handler, for messages a test writes itself (see `deliverTo`). */
+		handler: (...args) => handler(...args),
 		/** The send AGP is asked for last, as the caller wrote it. */
 		last: () => sends.at(-1),
 		/** Admits the last send, with the disposition it reports at once. */
@@ -47,4 +49,15 @@ export async function controlledCaller({ clock = createManualCallClock(0), ident
 /** Turns of the event loop, so every reaction the last step started has run. */
 export async function turns(n = 10) {
 	for (let i = 0; i < n; i++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Delivers a message of any type to the reply endpoint, addressed to the request the caller sent first and
+ * from its host's operation endpoint, with `fields` over the request's address (zorg's target, EM11): a part,
+ * an alive or an end, well formed or not. `from` replaces the origin node, `label` the correlation label.
+ */
+export async function deliverTo(t, fields, { from, label } = {}) {
+	const { payload, destination, options } = t.sends[0];
+	const message = { operationCall: 1, invocation: payload.invocation, attempt: payload.attempt, operation: payload.operation, ...fields };
+	await t.handler(message, { delivery: { correlationId: label ?? payload.attempt, source: { endpoint: destination, originNodeId: from ?? options.destinationSelector.originNodeId } } });
 }

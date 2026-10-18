@@ -3,12 +3,12 @@
   "paths": {
     ".": {
       "exports": {
-        "createCaller": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select"] },
+        "createCaller": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "advertiser-instance-select", "answer-in-parts", "cancel-invocation"] },
         "MAX_BOUND_MS": { "part": "operation-call", "serves": ["caller-chosen-bound"] },
-        "readCallEnding": { "part": "operation-call", "serves": ["honest-call-ending"] },
+        "readCallEnding": { "part": "operation-call", "serves": ["honest-call-ending", "answer-in-parts"] },
         "readRefusalRecord": { "part": "operation-call", "serves": ["call-refusal"] },
-        "readCallRequest": { "part": "operation-call", "serves": ["caller-chosen-bound"] },
-        "createOperationHost": { "part": "operation-call", "serves": ["serve-named-operations", "operation-descriptions", "declared-shape-validation", "call-refusal", "request-correlation", "peer-identity-evidence"] },
+        "readCallRequest": { "part": "operation-call", "serves": ["caller-chosen-bound", "answer-in-parts"] },
+        "createOperationHost": { "part": "operation-call", "serves": ["serve-named-operations", "operation-descriptions", "declared-shape-validation", "call-refusal", "request-correlation", "peer-identity-evidence", "answer-in-parts", "cancel-invocation"] },
         "DECLARATION_LIMITS": { "part": "operation-call", "serves": ["operation-descriptions"] },
         "systemCallClock": { "part": "operation-call", "serves": ["caller-chosen-bound"] },
         "systemIdentitySource": { "part": "operation-call", "serves": ["invocation-identity"] }
@@ -16,14 +16,16 @@
     },
     "./message-format": {
       "exports": {
-        "writeRequest": { "part": "operation-call", "serves": ["invocation-identity", "request-correlation"] },
-        "writeEnd": { "part": "operation-call", "serves": ["honest-call-ending", "call-refusal"] },
-        "writePart": { "part": "operation-call", "serves": ["honest-call-ending"] },
-        "readMessage": { "part": "operation-call", "serves": ["honest-call-ending", "request-correlation"] },
+        "writeRequest": { "part": "operation-call", "serves": ["invocation-identity", "request-correlation", "answer-in-parts"] },
+        "writeEnd": { "part": "operation-call", "serves": ["honest-call-ending", "call-refusal", "answer-in-parts"] },
+        "writePart": { "part": "operation-call", "serves": ["honest-call-ending", "answer-in-parts"] },
+        "writeAlive": { "part": "operation-call", "serves": ["answer-in-parts"] },
+        "writeCancel": { "part": "operation-call", "serves": ["cancel-invocation"] },
+        "readMessage": { "part": "operation-call", "serves": ["honest-call-ending", "request-correlation", "answer-in-parts", "cancel-invocation"] },
         "crossesAgp": { "part": "operation-call", "serves": ["honest-call-ending", "call-refusal"] },
         "messageBytes": { "part": "operation-call", "serves": ["call-refusal"] },
         "requestSendable": { "part": "operation-call", "serves": ["call-refusal"] },
-        "MESSAGE_LIMITS": { "part": "operation-call", "serves": ["call-refusal"] },
+        "MESSAGE_LIMITS": { "part": "operation-call", "serves": ["call-refusal", "answer-in-parts"] },
         "NAME_PATTERN": { "part": "operation-call", "serves": ["serve-named-operations"] },
         "INVOCATION_PATTERN": { "part": "operation-call", "serves": ["invocation-identity"] },
         "ATTEMPT_PATTERN": { "part": "operation-call", "serves": ["request-correlation"] },
@@ -34,13 +36,10 @@
     },
     "./caller-suite": {
       "exports": {
-        "registerCallerSuite": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "operation-descriptions", "advertiser-instance-select"] },
-        "callerSuiteRows": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "operation-descriptions", "advertiser-instance-select"] }
+        "registerCallerSuite": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "operation-descriptions", "advertiser-instance-select", "answer-in-parts", "cancel-invocation"] },
+        "callerSuiteRows": { "part": "operation-call", "serves": ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "operation-descriptions", "advertiser-instance-select", "answer-in-parts", "cancel-invocation"] }
       }
     }
   },
-  "deferred": {
-    "answer-in-parts": "D15",
-    "cancel-invocation": "D15"
-  }
+  "deferred": {}
 }

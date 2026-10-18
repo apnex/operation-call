@@ -9,7 +9,7 @@ import { createCaller, readCallRequest } from "@apnex/operation-call";
 import { createFakeNode } from "../support/fake-node.js";
 import { createManualCallClock } from "../support/manual-call-clock.js";
 
-const FIELDS = ["host", "service", "operation", "input", "bound", "invocation", "repeat", "signal"];
+const FIELDS = ["host", "service", "operation", "input", "bound", "invocation", "repeat", "signal", "onPart"];
 const invocation = "1791540000000-3f9a0c1d2b4e5f60";
 const base = () => ({ host: "host-a", service: "svc", operation: "op", input: { a: [1, -0] }, bound: 100 });
 
@@ -22,7 +22,7 @@ test("a valid request is given back checked, its input snapshotted and frozen, i
 	const controller = new AbortController();
 	const given = { ...base(), invocation, repeat: true, signal: controller.signal };
 	const request = readCallRequest(given);
-	assert.deepEqual({ ...request, signal: undefined }, { host: "host-a", service: "svc", operation: "op", input: { a: [1, 0] }, bound: 100, invocation, repeat: true, signal: undefined });
+	assert.deepEqual({ ...request, signal: undefined }, { host: "host-a", service: "svc", operation: "op", input: { a: [1, 0] }, bound: 100, invocation, repeat: true, signal: undefined, onPart: undefined });
 	assert.equal(request.signal, controller.signal, "the live AbortSignal, not a copy");
 	assert.notEqual(request.input, given.input);
 	assert.ok(Object.isFrozen(request.input) && Object.isFrozen(request.input.a));
@@ -64,6 +64,9 @@ test("a programming error throws EM12's TypeError or RangeError", () => {
 	for (const repeat of ["true", 1, null]) assert.throws(() => readCallRequest({ ...base(), repeat }), TypeError);
 	for (const signal of [null, {}, { aborted: "no" }, 1]) assert.throws(() => readCallRequest({ ...base(), signal }), TypeError);
 	assert.doesNotThrow(() => readCallRequest({ ...base(), signal: { aborted: false } }), "anything whose aborted is a boolean");
+	for (const onPart of [null, 1, "f", {}]) assert.throws(() => readCallRequest({ ...base(), onPart }), TypeError, `onPart ${String(onPart)}`);
+	const onPart = () => undefined;
+	assert.equal(readCallRequest({ ...base(), onPart }).onPart, onPart, "the function given");
 });
 
 test("invoke reads its clock first, then each field of the request and the input's accessors once", async () => {

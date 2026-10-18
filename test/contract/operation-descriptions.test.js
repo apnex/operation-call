@@ -92,17 +92,19 @@ test("the reasons are checked in EM10's order: name, depth before shape-check, s
 	assert.deepEqual(await host.declare({ name: "twenty", input: deepShape(20), answers: "whole" }, ok), { declared: true }, "a shape of exactly 20 levels is declared");
 });
 
-test("a declaration whose shape is not JSON, or that answers in parts, is a programming error thrown before anything is judged or exposed", async () => {
+test("a declaration whose shape is not JSON, or that answers neither whole nor in parts, is a programming error thrown before anything is judged or exposed; one answering in parts is declared and described so (D64)", async () => {
 	const { node, host } = await freshHost();
 	const cyclic = { $schema: D };
 	cyclic.properties = { self: cyclic };
 	for (const input of [cyclic, undefined, () => 1, { $schema: D, const: Number.NaN }, { $schema: D, enum: [1n] }]) {
 		assert.throws(() => host.declare({ name: "bad", input, answers: "whole" }, ok), TypeError);
 	}
-	assert.throws(() => host.declare({ name: "parts", input: { $schema: D }, answers: "parts" }, ok), TypeError, "answers in parts are deferred, D15");
 	assert.throws(() => host.declare({ name: "neither", input: { $schema: D } }, ok), TypeError);
+	assert.throws(() => host.declare({ name: "other", input: { $schema: D }, answers: "streamed" }, ok), TypeError);
 	assert.throws(() => host.declare({ name: "nohandler", input: { $schema: D }, answers: "whole" }), TypeError);
 	assert.deepEqual(endpoints(node), ["svc/describe"]);
+	assert.deepEqual(await host.declare({ name: "parts", input: { $schema: D }, answers: "parts" }, ok), { declared: true }, "an operation answering in parts is declared (D64)");
+	assert.deepEqual(host.description().operations.map((o) => [o.name, o.answers]), [["parts", "parts"]], "and described as answering in parts");
 });
 
 test("descriptions of exactly 524288 bytes are declared, and of one byte more refused; a single shape too large and two that fit only alone are refused", async () => {

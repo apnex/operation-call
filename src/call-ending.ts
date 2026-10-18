@@ -15,7 +15,7 @@ const REFUSED: { readonly ok: false } = Object.freeze({ ok: false });
 const ADDRESS = ["ending", "invocation", "attempt", "operation"];
 
 /** The reasons an unknown ending may give, through any caller (EM12; operation-proxy's PX6). */
-const UNKNOWN_REASONS = new Set(["bound-passed", "operation-failed", "answer-not-sendable", "proxy-lost", "hop-stalled"]);
+const UNKNOWN_REASONS = new Set(["bound-passed", "operation-failed", "answer-not-sendable", "part-missing", "proxy-lost", "hop-stalled"]);
 
 /** The reasons of an unknown ending that names no attempt: a hop's, and the whole find's passed bound. */
 const UNATTEMPTED_REASONS = new Set(["proxy-lost", "hop-stalled", "bound-passed"]);

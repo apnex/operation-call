@@ -174,6 +174,7 @@ export async function openTopology(options = {}) {
 	const exportAcked = (node, endpoint, remote) => node.operations.routeExports().items.some((r) => r.endpoint === endpoint && r.remoteNodeId === remote && r.state === "acked");
 	const routeVisible = (hostId, endpoint) => callerNode.operations.routes().candidates.some((r) => r.endpoint === endpoint && r.originNodeId === hostId);
 	const hooks = {
+		callClock: () => callClock,
 		advanceCallClock: (ms) => manual("advanceCallClock").advance(ms),
 		moveCallClock: (ms) => manual("moveCallClock").move(ms),
 		advanceAgpClock: (ms) => agpClock.advanceBy(ms),

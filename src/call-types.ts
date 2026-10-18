@@ -28,15 +28,29 @@ export interface CallRequest {
 	readonly invocation?: string;
 	/** Marks the invocation as a repeat of one that may have taken effect (operation-call's D2). */
 	readonly repeat?: boolean;
-	/** Passed to AGP for the send alone: an abort before AGP admits the send ends it not delivered. */
+	/**
+	 * Passed to AGP for the send: an abort before AGP admits the send ends it not delivered; one after it, before
+	 * the call has ended, cancels the invocation (EM12, `cancel-invocation`).
+	 */
 	readonly signal?: AbortSignal;
+	/**
+	 * Makes the call accept an answer in parts (EM12, `answer-in-parts`): each part taken is given here at once,
+	 * in order, and the bound becomes a bound on signs of life. What it returns or throws changes nothing.
+	 */
+	readonly onPart?: (part: AnswerPart) => unknown;
+}
+
+/** One part of an answer as a caller takes it (EM12): its sequence, from 1, and its answer, deeply frozen. */
+export interface AnswerPart {
+	readonly sequence: number;
+	readonly answer: JsonValue;
 }
 
 /** What AGP last reported of the request's delivery, when it reported delivered or unknown (EM12). */
 export type DeliveryReport = "delivered" | "unknown";
 
 /** Why the call layer itself ended an invocation unknown (EM12). */
-export type CallLayerUnknownReason = "bound-passed" | "operation-failed" | "answer-not-sendable";
+export type CallLayerUnknownReason = "bound-passed" | "operation-failed" | "answer-not-sendable" | "part-missing";
 
 /**
  * Why a caller across a hop ended an invocation unknown, where the hop lost certainty: the reasons a hop adds

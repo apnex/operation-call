@@ -5,7 +5,7 @@
 import type { CallEnding } from "../call-types.js";
 import { isAttemptId, isInvocationId } from "../names.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { beneathBound, checkAtBound, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
+import { beneathBound, checkAtBound, checkEndingFields, checkNotDelivered, inCase, runOutBound, untilEndedPumping } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 /** An array nested `levels` deep around 0. */
@@ -146,7 +146,7 @@ export const honestCallEndingCases: readonly SuiteCase[] = [
 		}),
 	},
 	{
-		name: "a deadline and a cancellation falling after admission has committed, with no answer, end unknown at the bound, never not delivered",
+		name: "a cancellation falling after admission has committed, before the receipt, cancels the invocation: the operation's signal fires, and the call ends as the operation then ends, never not delivered",
 		run: (h) => inCase(h, {}, async (c) => {
 			const controller = new AbortController();
 			c.hooks.afterNextAdmission(() => {
@@ -155,11 +155,10 @@ export const honestCallEndingCases: readonly SuiteCase[] = [
 			});
 			const call = watch(c.call({ operation: "silent", bound: 1000, signal: controller.signal }));
 			await until(() => c.a.runs.length === 1, "the operation runs");
-			await settle();
-			check(!call.settled(), "nothing ends the call before its bound");
-			await runOutBound(c, call, 1000, { ending: "the ending at the bound" });
-			const report = c.hooks.reports().at(-1) ?? null;
-			checkAtBound(call.value(), report === "failed" ? null : report, "an admitted send whose signal and deadline passed afterwards");
+			await until(call.settled, "the call ends as the cancelled operation ends");
+			const ending = call.value();
+			checkEndingFields(ending, "a cancelled call");
+			same([ending?.ending, ending?.ending === "unknown" ? ending.reason : undefined], ["unknown", "operation-failed"], "the operation, its signal fired by the cancel, ends failed, as the silent fixture rejects on its signal");
 		}),
 	},
 ];

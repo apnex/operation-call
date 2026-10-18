@@ -104,11 +104,7 @@ export function hostRefusal(code: HostRefusalCode, message: string, details: { [
 export function checkDeclarationForm(declaration: OperationDeclaration): void {
 	if (declaration === null || typeof declaration !== "object") throw new TypeError("a declaration is { name, input, answers }");
 	if (typeof declaration.name !== "string") throw new TypeError("a declaration's name is a string");
-	if (declaration.answers !== "whole") {
-		throw new TypeError(declaration.answers === "parts"
-			? "an operation answering in parts is outside the first version (zorg's D15); declare answers \"whole\""
-			: "a declaration's answers is \"whole\" or \"parts\"");
-	}
+	if (declaration.answers !== "whole" && declaration.answers !== "parts") throw new TypeError("a declaration's answers is \"whole\" or \"parts\"");
 	if (!snapshotJson(declaration.input).ok) throw new TypeError(`the input shape of operation ${JSON.stringify(cutTo128(declaration.name).text)} is not a JSON value`);
 }
 

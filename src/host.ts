@@ -15,11 +15,22 @@
  * AGP refuses, is replaced by a `failed` end with `answer-not-sendable` and AGP's code, or null when the host
  * found it unsendable itself; when that cannot be sent either, nothing is sent. Every answer goes to the
  * request's source endpoint, pinned to its origin node, under the request's attempt identity.
+ *
+ * Answers in parts and cancelling (EM11; zorg's D64): the host reads each message first and records a request
+ * - its attempt, operation, origin node and `aliveWithinMs` - before asking the evidence port, so a `cancel`
+ * or a caller's `alive` that follows it is taken whatever the evidence wait. A `cancel` fires the invocation's
+ * signal; for a request carrying `aliveWithinMs`, so does a liveness deadline of twice `aliveWithinMs` passing
+ * with no caller's `alive` taken, and the host submits its own `alive` every `aliveWithinMs` without a part. An
+ * operation declared in parts is given `part(answer)`, whose parts go one at a time in call order; a part or
+ * an `alive` that cannot be sent ends the invocation failed. Every end waits for the last submitted part, and
+ * holds `parts`, the parts admitted, when the request carried `aliveWithinMs`. A request is finished once the
+ * host's last send for it has settled, and the host then drops its record and stops its timers.
  */
 import type { AgpNode, EndpointBinding, EndpointName, JsonObject } from "@agp/node";
 import { observePromises, prepareShapeDocument, readPlainJson, snapshotJson, type JsonInput, type JsonValue, type PreparedShape } from "@apnex/shape-check";
+import { systemCallClock, type CallClock, type ClockTimer } from "./system-ports.js";
 import { checkDeclarationForm, describe, DESCRIBE_INPUT, hostRefusal, judgeDeclaration, nameDetails, type Description, type DescribedOperation, type HostRefusal, type OperationDeclaration } from "./declarations.js";
-import { crossesAgp, readMessage, writeEnd, type EndContent, type MessageAddress } from "./message-format.js";
+import { crossesAgp, readMessage, writeAlive, writeEnd, writePart, type EndContent, type MessageAddress, type RequestMessage } from "./message-format.js";
 import { DESCRIBE_OPERATION, invocationOfAttempt, isAttemptId, isName } from "./names.js";
 import { inputMisfit, malformedRequest, readRefusalRecord, type RefusalRecord } from "./refusal.js";
 
@@ -33,8 +44,10 @@ export type EvidenceFunction = (delivery: DeliveryContext) => unknown;
 export interface HostOptions {
 	/** The name the host serves under, matching EM1's pattern; its operations are `<service>/<operation>`. */
 	readonly service: string;
-	/** Asked for each request as it arrives; its answer is the operation's `evidence`. Null when absent. */
+	/** Asked for each message but a `cancel` or an `alive` as it arrives; its answer is the operation's `evidence`. Null when absent. */
 	readonly evidence?: EvidenceFunction;
+	/** The clock the host's signs of life run on (EM11); operation-call's default when absent. */
+	readonly clock?: CallClock;
 }
 
 /** What an operation is given beside its input. */
@@ -48,8 +61,17 @@ export interface OperationContext {
 	readonly delivery: DeliveryContext;
 	/** The evidence function's answer for this request, or null when the host supplied none. */
 	readonly evidence: unknown;
-	/** AGP's handler signal, which aborts when the node stops. */
+	/**
+	 * The invocation's signal: it fires when the node stops, when the caller cancels, when a request carrying
+	 * `aliveWithinMs` has had no caller's `alive` for twice that long, and when a part or an `alive` cannot be
+	 * sent (EM11).
+	 */
 	readonly signal: AbortSignal;
+	/**
+	 * For an operation declared `answers: "parts"`: sends an answer as the next part (EM11), resolving true once
+	 * AGP admits it and false when it cannot be sent, or once the signal has fired or the end has been decided.
+	 */
+	readonly part?: (answer: JsonInput) => Promise<boolean>;
 }
 
 /** How an operation ends an invocation: it answers, or it refuses with a refusal record (EM9). */
@@ -82,6 +104,41 @@ interface Served {
 	readonly name: string;
 	readonly prepared: PreparedShape & { accepted: true };
 	readonly handler: OperationHandler;
+	/** True for an operation declared `answers: "parts"`. */
+	readonly parts: boolean;
+}
+
+/** What the host keeps of a request it recorded, until the request is finished (EM11). */
+interface Recorded {
+	readonly operation: string;
+	readonly invocation: string;
+	readonly origin: string;
+	readonly aliveWithinMs: number | undefined;
+	/** Fires the invocation's signal: a cancel, a lapsed liveness, a part or alive that could not be sent. */
+	readonly controller: AbortController;
+	/** The liveness deadline on the host's clock, for a request carrying `aliveWithinMs`. */
+	liveUntil: number;
+	/** When the host last submitted a part or an `alive` for the request, or made the record. */
+	lastSubmitted: number;
+	livenessTimer: ClockTimer | undefined;
+	aliveTimer: ClockTimer | undefined;
+	/** Parts submitted and parts admitted. */
+	submitted: number;
+	admitted: number;
+	/** Parts called and not yet submitted, in call order, each with what it resolves. */
+	readonly queue: { readonly reading: ReturnType<typeof readPlainJson>; readonly resolve: (sent: boolean) => void }[];
+	/** The part submitted and not yet settled, if any; the end waits for it. */
+	inFlight: Promise<void> | undefined;
+	/** True once the end is decided: the operation returned, or the request ended without running it. */
+	endDecided: boolean;
+	/** True once the end is submitted: the host's alive goes on until then (EM11). */
+	endSubmitted: boolean;
+	/** The failure a part or an alive that could not be sent selected, which the end then is. */
+	failure: EndContent | undefined;
+	/** Resolves once a failure is selected. */
+	readonly failed: Promise<void>;
+	readonly fail: () => void;
+	finished: boolean;
 }
 
 /**
@@ -159,16 +216,30 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 	let closed = false;
 	let queue: Promise<unknown> = Promise.resolve();
 
-	/** Sends an end message for a request; an answer that cannot be sent becomes a failed end, sent once. */
-	const reply = async (address: MessageAddress, content: EndContent, to: DeliveryContext): Promise<void> => {
-		const from = `${service}/${address.operation}` as EndpointName;
-		const send = (message: JsonValue): Promise<unknown> => node.send(from, to.source.endpoint, message as JsonObject, {
-			...(to.correlationId === undefined ? {} : { correlationId: to.correlationId }),
-			destinationSelector: { originNodeId: to.source.originNodeId, mode: "pinned" },
-		});
-		let message = writeEnd(address, content) as unknown as JsonValue;
+	const clock = options.clock ?? systemCallClock;
+	if (typeof clock.now !== "function" || typeof clock.schedule !== "function") throw new TypeError("a host's clock offers now and schedule");
+	/** The requests recorded and not yet finished, by attempt identity (EM11). */
+	const records = new Map<string, Recorded>();
+
+	/** Reads the host's clock; a reading it cannot give is taken as the last time known, here 0 as the floor. */
+	const now = (): number => {
+		const reading = clock.now();
+		if (typeof reading !== "number" || !Number.isFinite(reading)) throw new TypeError(`the host's clock read ${String(reading)}, not a finite number of milliseconds`);
+		return reading;
+	};
+
+	/** Sends a message from an operation's endpoint to the request's source endpoint, pinned to its origin under its label. */
+	const sendTo = (operationName: string, to: DeliveryContext, message: JsonValue): Promise<unknown> => node.send(`${service}/${operationName}` as EndpointName, to.source.endpoint, message as JsonObject, {
+		...(to.correlationId === undefined ? {} : { correlationId: to.correlationId }),
+		destinationSelector: { originNodeId: to.source.originNodeId, mode: "pinned" },
+	});
+
+	/** Sends an end message for a request, with `parts` when given; an answer that cannot be sent becomes a failed end, sent once. */
+	const reply = async (address: MessageAddress, content: EndContent, to: DeliveryContext, parts?: number): Promise<void> => {
+		const send = (message: JsonValue): Promise<unknown> => sendTo(address.operation, to, message);
+		let message = writeEnd(address, content, parts) as unknown as JsonValue;
 		if (content.outcome !== "failed" && !crossesAgp(message)) {
-			message = writeEnd(address, { outcome: "failed", reason: "answer-not-sendable", agpCode: null }) as unknown as JsonValue;
+			message = writeEnd(address, { outcome: "failed", reason: "answer-not-sendable", agpCode: null }, parts) as unknown as JsonValue;
 			content = { outcome: "failed", reason: "answer-not-sendable", agpCode: null };
 		}
 		try {
@@ -177,38 +248,262 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			if (content.outcome === "failed") return;
 			const code = (error as { code?: unknown } | null)?.code;
 			const agpCode = typeof code === "string" ? code : null;
-			await send(writeEnd(address, { outcome: "failed", reason: "answer-not-sendable", agpCode }) as unknown as JsonValue).catch(() => undefined);
+			await send(writeEnd(address, { outcome: "failed", reason: "answer-not-sendable", agpCode }, parts) as unknown as JsonValue).catch(() => undefined);
 		}
 	};
 
-	/** Serves one request delivered to an operation's endpoint. */
-	const serve = async (operation: Served, payload: JsonObject, delivery: DeliveryContext, signal: AbortSignal): Promise<void> => {
-		let evidenceAnswer: JsonValue = null;
-		let evidenceFailed = false;
-		if (evidence !== undefined) {
-			const settled = await awaitNativePromise(() => evidence(delivery));
-			if (!settled.ok) {
-				evidenceFailed = true;
-			} else {
-				const plainEvidence = readPlainJson(settled.value);
-				if (!plainEvidence.ok) evidenceFailed = true;
-				else evidenceAnswer = plainEvidence.value;
+	/** Finishes a request: its record dropped, its timers stopped, no later cancel or alive taken (EM11). */
+	const finish = (label: string | undefined, record: Recorded | undefined): void => {
+		if (record === undefined || record.finished) return;
+		record.finished = true;
+		if (label !== undefined && records.get(label) === record) records.delete(label);
+		for (const pending of [record.livenessTimer, record.aliveTimer]) {
+			if (pending === undefined) continue;
+			try {
+				pending.cancel();
+			} catch {
+				// A timer that still runs finds the request finished.
 			}
 		}
+	};
+
+	/** Selects a failure for an invocation whose part or alive could not be sent, and fires its signal (EM11). */
+	const selectFailure = (record: Recorded, agpCode: string | null): void => {
+		if (record.failure !== undefined || record.endDecided) return;
+		record.failure = { outcome: "failed", reason: "answer-not-sendable", agpCode };
+		record.controller.abort(new Error("a part or an alive of the invocation could not be sent"));
+		record.fail();
+	};
+
+	/** True once the invocation's signal has fired or its end is decided: no part or alive goes after it. */
+	const stopped = (record: Recorded, signal: AbortSignal): boolean => record.endDecided || record.failure !== undefined || signal.aborted;
+
+	/** Watches a request's liveness deadline, firing its signal for good once the host's clock reads it (EM11). */
+	const watchLiveness = (record: Recorded): void => {
+		const check = (): void => {
+			if (record.finished || record.controller.signal.aborted) return;
+			let remaining: number;
+			try {
+				remaining = record.liveUntil - now();
+			} catch {
+				remaining = 0;
+			}
+			if (remaining <= 0) {
+				record.controller.abort(new Error("the caller sent no alive for twice aliveWithinMs"));
+				return;
+			}
+			try {
+				record.livenessTimer = clock.schedule(Math.ceil(remaining), check);
+			} catch {
+				record.controller.abort(new Error("the host's clock could not schedule the liveness deadline"));
+			}
+		};
+		try {
+			record.livenessTimer = clock.schedule(2 * (record.aliveWithinMs as number), check);
+		} catch {
+			record.controller.abort(new Error("the host's clock could not schedule the liveness deadline"));
+		}
+	};
+
+	/** Submits the host's alive whenever aliveWithinMs passes without a part or alive submitted (EM11). */
+	const beat = (record: Recorded, to: DeliveryContext, address: MessageAddress, signal: AbortSignal): void => {
+		const every = record.aliveWithinMs as number;
+		const due = (): void => {
+			// The host's alive goes on until it submits the end or the signal fires, the wait for a part included (EM11).
+			if (record.finished || record.endSubmitted || signal.aborted) return;
+			let at: number;
+			try {
+				at = now();
+			} catch {
+				at = record.lastSubmitted + every;
+			}
+			const remaining = record.lastSubmitted + every - at;
+			if (remaining <= 0) {
+				record.lastSubmitted = at;
+				Promise.resolve(sendTo(address.operation, to, writeAlive(address) as unknown as JsonValue)).catch((error: unknown) => {
+					// An alive refused before the end is decided ends the invocation failed; after it, nothing.
+					const code = (error as { code?: unknown } | null)?.code;
+					selectFailure(record, typeof code === "string" ? code : null);
+				});
+			}
+			try {
+				record.aliveTimer = clock.schedule(remaining <= 0 ? every : Math.ceil(remaining), due);
+			} catch {
+				// A clock that cannot schedule sends no more alive; the caller's bound tells it.
+			}
+		};
+		try {
+			record.aliveTimer = clock.schedule(every, due);
+		} catch {
+			// As above.
+		}
+	};
+
+	/** Records a request before the evidence port is asked (EM11). */
+	const recordRequest = (operation: Served, message: RequestMessage, delivery: DeliveryContext): Recorded => {
+		let fail = (): void => undefined;
+		const failed = new Promise<void>((resolve) => { fail = resolve; });
+		let at = 0;
+		try {
+			at = now();
+		} catch {
+			// The record's time is unknown; its liveness counts from 0, as a clock that cannot be read shows nothing.
+		}
+		const aliveWithinMs = message.aliveWithinMs;
+		const record: Recorded = {
+			operation: operation.name, invocation: message.invocation, origin: delivery.source.originNodeId, aliveWithinMs,
+			controller: new AbortController(), liveUntil: aliveWithinMs === undefined ? Number.POSITIVE_INFINITY : at + 2 * aliveWithinMs,
+			lastSubmitted: at, livenessTimer: undefined, aliveTimer: undefined, submitted: 0, admitted: 0, queue: [], inFlight: undefined,
+			endDecided: false, endSubmitted: false, failure: undefined, failed, fail, finished: false,
+		};
+		return record;
+	};
+
+	/** Takes a cancel or a caller's alive for a recorded request, or discards it (EM11). */
+	const control = (operation: Served, message: ReturnType<typeof readMessage>, delivery: DeliveryContext): void => {
 		const label = delivery.correlationId;
-		const message = readMessage(payload);
-		if (message === undefined || message.type !== "request" || message.attempt !== label || message.operation !== operation.name) {
-			if (isAttemptId(label)) await reply({ invocation: invocationOfAttempt(label), attempt: label, operation: operation.name }, { outcome: "refused", refusal: malformedRequest() }, delivery);
+		if (message === undefined || (message.type !== "cancel" && message.type !== "alive") || message.attempt !== label) return;
+		const record = records.get(label);
+		if (record === undefined || record.finished || record.operation !== operation.name || message.operation !== operation.name
+			|| message.invocation !== record.invocation || delivery.source.originNodeId !== record.origin) return;
+		if (message.type === "cancel") {
+			record.controller.abort(new Error("the caller cancelled the invocation"));
 			return;
 		}
-		const address: MessageAddress = { invocation: message.invocation, attempt: message.attempt, operation: operation.name };
-		if (evidenceFailed) return reply(address, { outcome: "failed", reason: "operation-failed", agpCode: null }, delivery);
-		const verdict = operation.prepared.judge(message.input);
-		if (verdict.verdict === "misfit") return reply(address, { outcome: "refused", refusal: inputMisfit(operation.name, verdict.misfits) }, delivery);
-		// Running the operation and reading what it returned as plain data are one failure boundary (EM11; D54, D55).
-		const settled = await awaitNativePromise(() => operation.handler(message.input, Object.freeze({ service, operation: operation.name, invocation: message.invocation, attempt: message.attempt, delivery, evidence: evidenceAnswer, signal })));
-		const content: EndContent = settled.ok ? resultContent(settled.value) : { outcome: "failed", reason: "operation-failed", agpCode: null };
-		return reply(address, content, delivery);
+		// A caller's alive taken before the liveness deadline moves it; one read at or after it is not taken (EM11).
+		if (record.aliveWithinMs === undefined || record.controller.signal.aborted) return;
+		let at: number;
+		try {
+			at = now();
+		} catch {
+			return;
+		}
+		if (at >= record.liveUntil) {
+			record.controller.abort(new Error("the caller sent no alive for twice aliveWithinMs"));
+			return;
+		}
+		record.liveUntil = at + 2 * record.aliveWithinMs;
+	};
+
+	/** Serves one message delivered to an operation's endpoint. */
+	const serve = async (operation: Served, payload: JsonObject, delivery: DeliveryContext, agpSignal: AbortSignal): Promise<void> => {
+		const label = delivery.correlationId;
+		// The message is read first: a cancel or an alive goes to its record and asks nothing of the evidence port.
+		const message = readMessage(payload);
+		const type = (payload as { readonly type?: unknown } | null)?.type;
+		if (type === "cancel" || type === "alive") return control(operation, message, delivery);
+		const wellFormed = message !== undefined && message.type === "request" && message.attempt === label && message.operation === operation.name;
+		// A well-formed request is recorded before the evidence port is asked, unless its attempt already is.
+		let record: Recorded | undefined;
+		if (wellFormed && label !== undefined && !records.has(label)) {
+			record = recordRequest(operation, message as RequestMessage, delivery);
+			records.set(label, record);
+		}
+		const signal = record === undefined ? agpSignal : AbortSignal.any([agpSignal, record.controller.signal]);
+		// The host's signs of life begin with the record, whatever the evidence wait (EM11).
+		if (record !== undefined && record.aliveWithinMs !== undefined) {
+			const request = message as RequestMessage;
+			watchLiveness(record);
+			beat(record, delivery, { invocation: request.invocation, attempt: request.attempt, operation: operation.name }, signal);
+		}
+		try {
+			let evidenceAnswer: JsonValue = null;
+			let evidenceFailed = false;
+			if (evidence !== undefined) {
+				const settled = await awaitNativePromise(() => evidence(delivery));
+				if (!settled.ok) {
+					evidenceFailed = true;
+				} else {
+					const plainEvidence = readPlainJson(settled.value);
+					if (!plainEvidence.ok) evidenceFailed = true;
+					else evidenceAnswer = plainEvidence.value;
+				}
+			}
+			if (!wellFormed) {
+				if (isAttemptId(label)) await reply({ invocation: invocationOfAttempt(label), attempt: label, operation: operation.name }, { outcome: "refused", refusal: malformedRequest() }, delivery);
+				return;
+			}
+			const request = message as RequestMessage;
+			const address: MessageAddress = { invocation: request.invocation, attempt: request.attempt, operation: operation.name };
+			const counted = request.aliveWithinMs !== undefined;
+			/** Sends the end once the last submitted part has settled, `parts` counting the admitted ones (EM11). */
+			const end = async (content: EndContent): Promise<void> => {
+				if (record !== undefined) {
+					record.endDecided = true;
+					flush(record);
+					await record.inFlight;
+					record.endSubmitted = true;
+				}
+				await reply(address, record?.failure ?? content, delivery, counted ? record?.admitted ?? 0 : undefined);
+			};
+			if (evidenceFailed) return await end({ outcome: "failed", reason: "operation-failed", agpCode: null });
+			const verdict = operation.prepared.judge(request.input);
+			if (verdict.verdict === "misfit") return await end({ outcome: "refused", refusal: inputMisfit(operation.name, verdict.misfits) });
+			const part = operation.parts && record !== undefined ? partOf(record, address, delivery, signal) : undefined;
+			const context = Object.freeze({ service, operation: operation.name, invocation: request.invocation, attempt: request.attempt, delivery, evidence: evidenceAnswer, signal, ...(part === undefined ? {} : { part }) });
+			// Running the operation and reading what it returned as plain data are one failure boundary (EM11; D54, D55).
+			const running = awaitNativePromise(() => operation.handler(request.input, context));
+			const outcome = record === undefined ? await running : await Promise.race([running, record.failed.then(() => undefined)]);
+			const content: EndContent = outcome === undefined ? (record?.failure as EndContent)
+				: outcome.ok ? resultContent(outcome.value) : { outcome: "failed", reason: "operation-failed", agpCode: null };
+			return await end(content);
+		} finally {
+			finish(label, record);
+		}
+	};
+
+	/** Resolves every part still waiting unsubmitted as false: the signal fired, or the end is decided (EM11). */
+	const flush = (record: Recorded): void => {
+		for (const waiting of record.queue.splice(0)) waiting.resolve(false);
+	};
+
+	/** Submits the next waiting part once the one before it has settled, one at a time, in call order (EM11). */
+	const pump = (record: Recorded, address: MessageAddress, to: DeliveryContext, signal: AbortSignal): void => {
+		if (record.inFlight !== undefined) return;
+		if (stopped(record, signal)) return flush(record);
+		const next = record.queue.shift();
+		if (next === undefined) return;
+		const failNow = (): void => {
+			selectFailure(record, null);
+			next.resolve(false);
+			flush(record);
+		};
+		if (!next.reading.ok) return failNow();
+		const message = writePart(address, record.submitted + 1, next.reading.value) as unknown as JsonValue;
+		if (!crossesAgp(message)) return failNow();
+		record.submitted++;
+		try {
+			record.lastSubmitted = now();
+		} catch {
+			// The alive's count goes on from the last time known.
+		}
+		record.inFlight = Promise.resolve(sendTo(address.operation, to, message)).then(() => {
+			record.admitted++;
+			next.resolve(true);
+		}, (error: unknown) => {
+			const code = (error as { code?: unknown } | null)?.code;
+			selectFailure(record, typeof code === "string" ? code : null);
+			next.resolve(false);
+			flush(record);
+		}).finally(() => {
+			record.inFlight = undefined;
+			pump(record, address, to, signal);
+		});
+	};
+
+	/** The `part` an operation in parts is given for one request (EM11). */
+	const partOf = (record: Recorded, address: MessageAddress, to: DeliveryContext, signal: AbortSignal): ((answer: JsonInput) => Promise<boolean>) => {
+		// A waiting part resolves false as soon as the signal fires.
+		if (!signal.aborted) signal.addEventListener("abort", () => flush(record), { once: true });
+		return (answer: JsonInput): Promise<boolean> => {
+			if (stopped(record, signal)) return Promise.resolve(false);
+			// The answer is read as plain data as `part` is called, so what the operation does with it later changes nothing.
+			const reading = readPlainJson(answer);
+			return new Promise<boolean>((resolve) => {
+				record.queue.push({ reading, resolve });
+				pump(record, address, to, signal);
+			});
+		};
 	};
 
 	const expose = async (operation: Served): Promise<void> => {
@@ -222,6 +517,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		name: DESCRIBE_OPERATION,
 		prepared: describeShape,
 		handler: () => ({ outcome: "answered", answer: description() as unknown as JsonValue }),
+		parts: false,
 	});
 
 	const declare = (declaration: OperationDeclaration, handler: OperationHandler): Promise<DeclarationOutcome> => {
@@ -233,7 +529,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			if (!judged.accepted) return { declared: false, refusal: judged.refusal };
 			served.add(judged.described.name);
 			try {
-				await expose({ name: judged.described.name, prepared: judged.prepared, handler });
+				await expose({ name: judged.described.name, prepared: judged.prepared, handler, parts: judged.described.answers === "parts" });
 			} catch (error) {
 				served.delete(judged.described.name);
 				throw error;
@@ -253,6 +549,8 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			closed = true;
 			await queue;
 			await Promise.all(bindings.map((b) => b.close()));
+			// Closing finishes every request still recorded (EM11).
+			for (const [label, record] of [...records]) finish(label, record);
 		},
 	});
 	return { opened: true, host };

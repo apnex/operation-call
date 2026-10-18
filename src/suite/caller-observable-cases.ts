@@ -6,7 +6,7 @@
  */
 import type { CallEnding } from "../call-types.js";
 import { check, same, settle, until, watch } from "./suite-check.js";
-import { ANY_INPUT, checkEndingFields, checkNotDelivered, FIXTURE_OPERATIONS, inCase, invokeExactly, runOutBound, SERVICE, SHAPED_INPUT, STRICT_INPUT, type CaseContext } from "./suite-support.js";
+import { ANY_INPUT, checkEndingFields, checkNotDelivered, FIXTURE_OPERATIONS, inCase, invokeExactly, PARTS_OPERATIONS, runOutBound, SERVICE, SHAPED_INPUT, STRICT_INPUT, type CaseContext } from "./suite-support.js";
 import type { SuiteCase } from "./suite-types.js";
 
 /** A call to `echo` on host `a` that is valid in every argument. */
@@ -230,8 +230,9 @@ export const descriptionCases: readonly SuiteCase[] = [
 			same(ending.ending, "answered", "describe answers");
 			if (ending.ending !== "answered") return;
 			const shapes: { [name: string]: unknown } = { strict: STRICT_INPUT, shaped: SHAPED_INPUT };
-			const names = [...FIXTURE_OPERATIONS].sort();
-			same(ending.answer, { service: SERVICE, operations: names.map((name) => ({ name, input: shapes[name] ?? ANY_INPUT, answers: "whole" })) }, "the description");
+			const parts = new Set<string>(PARTS_OPERATIONS);
+			const names = [...FIXTURE_OPERATIONS, ...PARTS_OPERATIONS].sort();
+			same(ending.answer, { service: SERVICE, operations: names.map((name) => ({ name, input: shapes[name] ?? ANY_INPUT, answers: parts.has(name) ? "parts" : "whole" })) }, "the description, each operation answering in parts described so (D64)");
 			const shaped = (ending.answer as { operations: { name: string; input: { [n: string]: unknown } }[] }).operations.find((o) => o.name === "shaped");
 			same(Object.keys(shaped?.input ?? {}), Object.keys(SHAPED_INPUT), "the shape's names in the order declared");
 			same(Object.keys((shaped?.input.properties ?? {}) as object), Object.keys(SHAPED_INPUT.properties), "nested names in the order declared");

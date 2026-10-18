@@ -10,10 +10,22 @@
  * `hold`, then refuses with the refusal record its input holds; `busy` occupies its host's thread for
  * `input.ms` milliseconds of real time before answering `input.ms`; `shaped` declares the input shape
  * `SHAPED_INPUT` and answers its input.
+ *
+ * Operations answering in parts (zorg's target, EM11, EM12; D64): `stream` sends each answer of `input.parts` as
+ * a part, awaiting each, then answers `{sent, results}`; `quiet` sends no part and answers `{cancelled: true}`
+ * once its signal fires; `drip` sends `input.count` parts, each once the case releases a latch of `holds`, then
+ * answers `"done"`. Each host also exposes `fixture/scripted` straight on its AGP node, beneath operation-call's
+ * host, which answers a request with exactly the messages its input scripts - parts of any sequence, `alive`,
+ * ends with or without `parts` - each `{"wait": true}` entry waiting for the case to release a latch, and records
+ * every message that reaches it, so a case sees the caller's `alive` and `cancel`. The hosts keep time on the
+ * call bound's clock, `hooks.callClock()`.
  */
+import type { AgpNode, EndpointName, JsonObject } from "@agp/node";
 import type { CallEnding, CallRequest } from "../call-types.js";
+import { readMessage } from "../message-format.js";
 import { createOperationHost, type OperationContext, type OperationHandler, type OperationHost } from "../host.js";
 import type { JsonInput, JsonValue } from "@apnex/shape-check";
+import type { CallClock } from "../system-ports.js";
 import type { RefusalRecord } from "../refusal.js";
 import { systemCallClock } from "../system-ports.js";
 import { check, latch, same, settle, turn, until, watch, type Latch, type Watched } from "./suite-check.js";
@@ -53,14 +65,26 @@ export interface Run {
 	readonly origin: string;
 }
 
+/** A message that reached `fixture/scripted`, as the scripted endpoint saw it. */
+export interface Scripted {
+	readonly type: string;
+	readonly attempt: string | undefined;
+	readonly origin: string;
+	readonly valid: boolean;
+}
+
 /** One fixture host. */
 export interface FixtureHost {
 	readonly nodeId: string;
 	readonly host: OperationHost;
 	/** Every run of any fixture operation on this host, in order. */
 	readonly runs: Run[];
-	/** The latch of each run of `hold`, in order. */
+	/** The latch of each run of `hold`, and of each part of `drip` and each wait of `scripted`, in order. */
 	readonly holds: Latch[];
+	/** The attempts whose invocation's signal fired, in order. */
+	readonly aborted: string[];
+	/** Each message that reached `fixture/scripted`, in order. */
+	readonly scripted: Scripted[];
 }
 
 /** A case's context. */
@@ -79,14 +103,53 @@ export interface CaseContext {
 /** Every fixture operation's name. */
 export const FIXTURE_OPERATIONS = ["echo", "which", "hold", "silent", "deeper", "sized", "refuses", "throws", "strict", "hold-refuses", "busy", "shaped"] as const;
 
-/** Opens a fixture host on one node, declaring every fixture operation. */
-async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"][number]["node"]): Promise<FixtureHost> {
-	const opening = await createOperationHost(node, { service: SERVICE });
+/** Every fixture operation answering in parts (D64). */
+export const PARTS_OPERATIONS = ["stream", "quiet", "drip"] as const;
+
+/** The endpoint the scripted responder answers at, beneath operation-call's host. */
+export const SCRIPTED = "scripted";
+
+/**
+ * Exposes `fixture/scripted` on a host node: a request is answered with the messages its input's `messages`
+ * scripts, in order, each addressed to the request and sent as a host replies; a `{"wait": true}` entry waits
+ * for the case to release a latch of `holds`. Every message that reaches the endpoint is recorded.
+ */
+async function exposeScripted(node: AgpNode, holds: Latch[], scripted: Scripted[]): Promise<void> {
+	await node.expose(`${SERVICE}/${SCRIPTED}` as EndpointName, async (payload, context) => {
+		const delivery = context.delivery;
+		const message = readMessage(payload);
+		const type = (payload as { readonly type?: unknown }).type;
+		scripted.push({ type: typeof type === "string" ? type : "", attempt: delivery.correlationId, origin: delivery.source.originNodeId, valid: message !== undefined });
+		if (message === undefined || message.type !== "request") return;
+		const script = (message.input as { readonly messages?: readonly JsonValue[] } | null)?.messages ?? [];
+		const head = { operationCall: 1, invocation: message.invocation, attempt: message.attempt, operation: SCRIPTED };
+		for (const entry of script) {
+			if ((entry as { readonly wait?: unknown }).wait === true) {
+				const held = latch();
+				holds.push(held);
+				await held.wait;
+				continue;
+			}
+			await node.send(`${SERVICE}/${SCRIPTED}` as EndpointName, delivery.source.endpoint, { ...head, ...(entry as JsonObject) } as JsonObject, {
+				...(delivery.correlationId === undefined ? {} : { correlationId: delivery.correlationId }),
+				destinationSelector: { originNodeId: delivery.source.originNodeId, mode: "pinned" },
+			}).catch(() => undefined);
+		}
+	});
+}
+
+/** Opens a fixture host on one node, declaring every fixture operation, keeping time on the call bound's clock. */
+async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"][number]["node"], clock: CallClock): Promise<FixtureHost> {
+	const opening = await createOperationHost(node, { service: SERVICE, clock });
 	check(opening.opened, `the fixture host on ${nodeId} opens`);
 	const runs: Run[] = [];
 	const holds: Latch[] = [];
+	const aborted: string[] = [];
+	const scripted: Scripted[] = [];
 	const record = (input: JsonValue, c: OperationContext): void => {
 		runs.push({ operation: c.operation, input, invocation: c.invocation, attempt: c.attempt, correlationId: c.delivery.correlationId, origin: c.delivery.source.originNodeId });
+		if (c.signal.aborted) aborted.push(c.attempt);
+		else c.signal.addEventListener("abort", () => { aborted.push(c.attempt); }, { once: true });
 	};
 	const who = (c: OperationContext): JsonValue => ({ host: nodeId, invocation: c.invocation, attempt: c.attempt });
 	const any = ANY_INPUT;
@@ -127,7 +190,42 @@ async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"]
 		});
 		check(outcome.declared, `the fixture operation ${name} is declared`);
 	}
-	return { nodeId, host: opening.host, runs, holds };
+	const send = (c: OperationContext): ((answer: JsonInput) => Promise<boolean>) => {
+		check(typeof c.part === "function", "an operation answering in parts is given part");
+		return c.part as (answer: JsonInput) => Promise<boolean>;
+	};
+	const partsHandlers: { [name: string]: OperationHandler } = {
+		stream: async (input, c) => {
+			const results: boolean[] = [];
+			for (const answer of (input as { parts?: JsonValue[] }).parts ?? []) results.push(await send(c)(answer));
+			return { outcome: "answered", answer: { sent: results.filter(Boolean).length, results } };
+		},
+		quiet: (_input, c) => new Promise((resolve) => {
+			const done = (): void => resolve({ outcome: "answered", answer: { cancelled: true } });
+			if (c.signal.aborted) done();
+			else c.signal.addEventListener("abort", done, { once: true });
+		}),
+		drip: async (input, c) => {
+			const count = (input as { count?: number }).count ?? 0;
+			for (let i = 1; i <= count; i++) {
+				const held = latch();
+				holds.push(held);
+				await held.wait;
+				await send(c)(i);
+			}
+			return { outcome: "answered", answer: "done" };
+		},
+	};
+	for (const name of PARTS_OPERATIONS) {
+		const handler = partsHandlers[name] as OperationHandler;
+		const outcome = await opening.host.declare({ name, input: ANY_INPUT, answers: "parts" }, (value, c) => {
+			record(value, c);
+			return handler(value, c);
+		});
+		check(outcome.declared, `the fixture operation ${name} is declared, answering in parts`);
+	}
+	await exposeScripted(node, holds, scripted);
+	return { nodeId, host: opening.host, runs, holds, aborted, scripted };
 }
 
 /** Opens a session, its fixture hosts, and waits until every fixture operation can be called on both. */
@@ -135,10 +233,11 @@ export async function openCase(harness: CallerSuiteHarness, options: CallerSuite
 	const session = await harness.open(options);
 	try {
 		const [ha, hb] = session.hosts;
-		const a = await openFixtureHost(ha.nodeId, ha.node);
-		const b = await openFixtureHost(hb.nodeId, hb.node);
+		const clock = session.hooks.callClock();
+		const a = await openFixtureHost(ha.nodeId, ha.node, clock);
+		const b = await openFixtureHost(hb.nodeId, hb.node, clock);
 		for (const host of [a, b]) {
-			for (const name of [...FIXTURE_OPERATIONS, "describe"]) await session.hooks.ready(host.nodeId, `${SERVICE}/${name}`);
+			for (const name of [...FIXTURE_OPERATIONS, ...PARTS_OPERATIONS, SCRIPTED, "describe"]) await session.hooks.ready(host.nodeId, `${SERVICE}/${name}`);
 		}
 		const call = (request: Partial<CallRequest> & { readonly operation: string }): Promise<CallEnding> =>
 			session.caller.invoke({ host: a.nodeId, service: SERVICE, input: {}, bound: 1000, ...request });

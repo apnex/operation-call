@@ -16,12 +16,19 @@
  * passed decides the ending even when its own timer has not yet run. Choosing and settling the ending never
  * depends on the clock port's cleanup, and every reaction the caller leaves running handles its own
  * failure. Nothing here is particular to one runtime (zorg's D31).
+ *
+ * A call that gives `onPart` accepts an answer in parts (EM12, `answer-in-parts`): its request carries
+ * `aliveWithinMs`, its deadline moves to the bound after each `part` or `alive` taken before it, each part
+ * taken in order is given to `onPart` at once, and the caller submits an `alive` to the host every
+ * `aliveWithinMs`. The call's abort signal, firing before the call has ended, cancels it, whole or in parts
+ * (`cancel-invocation`): the deadline stops moving, and once AGP has admitted the request the caller submits
+ * one `cancel`, as a call in parts also does when it ends at its deadline or with `part-missing`.
  */
 import type { AgpNode, EndpointName, JsonObject } from "@agp/node";
-import type { CallLayerEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
-import { snapshotJson } from "@apnex/shape-check";
+import type { AnswerPart, CallLayerEnding, CallRequest, DeliveryReport, OperationCaller } from "./call-types.js";
+import { observePromises, snapshotJson } from "@apnex/shape-check";
 import type { JsonValue } from "@apnex/shape-check";
-import { readMessage, requestSendable, writeRequest, type EndMessage } from "./message-format.js";
+import { readMessage, requestSendable, writeAlive, writeCancel, writeRequest, type AliveMessage, type EndMessage, type PartMessage } from "./message-format.js";
 import { isInvocationId, isName, makeAttemptId, makeInvocationId, REPLY_ENDPOINT, type IdentitySource } from "./names.js";
 import { notSendable } from "./refusal.js";
 import { systemCallClock, systemIdentitySource, type CallClock, type ClockTimer } from "./system-ports.js";
@@ -60,8 +67,10 @@ interface Waiting {
 	readonly operation: string;
 	readonly endpoint: string;
 	readonly host: string;
-	/** Takes an end message the reply endpoint accepted for this attempt. */
-	readonly take: (message: EndMessage) => void;
+	/** True when the call accepts parts: its request carried `aliveWithinMs` (EM12). */
+	readonly parts: boolean;
+	/** Takes a message the reply endpoint accepted for this attempt. */
+	readonly take: (message: EndMessage | PartMessage | AliveMessage) => void;
 }
 
 /** AGP's code from a rejected send; a rejection carrying none is recorded as `INTERNAL` (EM12). */
@@ -80,10 +89,11 @@ export interface ReadCallRequest {
 	readonly invocation: string | undefined;
 	readonly repeat: boolean;
 	readonly signal: AbortSignal | undefined;
+	readonly onPart: ((part: AnswerPart) => unknown) | undefined;
 }
 
 /**
- * Reads a call request (EM12): `host`, `service`, `operation`, `bound`, `invocation`, `repeat` and `signal` at most
+ * Reads a call request (EM12): `host`, `service`, `operation`, `bound`, `invocation`, `repeat`, `signal` and `onPart` at most
  * once each, and `input` once through shape-check's `snapshotJson`, so an accessor on the request or the input
  * is read now and never again. A call that breaks them is the caller's programming error, thrown as a
  * `RangeError` (the bound) or a `TypeError` (anything else), never an ending; an input accessor that throws is
@@ -112,6 +122,8 @@ export function readCallRequest(call: CallRequest): ReadCallRequest {
 	if (repeat !== undefined && typeof repeat !== "boolean") throw new TypeError("a call's repeat flag is true or false");
 	const signal: unknown = call.signal;
 	if (signal !== undefined && (signal === null || typeof (signal as { aborted?: unknown }).aborted !== "boolean")) throw new TypeError("a call's signal must be an AbortSignal");
+	const onPart: unknown = call.onPart;
+	if (onPart !== undefined && typeof onPart !== "function") throw new TypeError("a call's onPart must be a function");
 	return Object.freeze({
 		host,
 		service,
@@ -121,6 +133,7 @@ export function readCallRequest(call: CallRequest): ReadCallRequest {
 		invocation: invocation as string | undefined,
 		repeat: repeat === true,
 		signal: signal as AbortSignal | undefined,
+		onPart: onPart as ((part: AnswerPart) => unknown) | undefined,
 	});
 }
 
@@ -146,26 +159,49 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 		const attempt = label === undefined ? undefined : waiting.get(label);
 		const message = readMessage(payload);
 		// Taken only in the form EM11 gives, under its own attempt's label, while that attempt waits, for its
-		// invocation and operation, from the operation's endpoint on the node the attempt was pinned to.
-		if (attempt === undefined || message === undefined || message.type !== "end" || message.attempt !== label
+		// invocation and operation, from the operation's endpoint on the node the attempt was pinned to; an end
+		// only when it holds `parts` exactly when the call accepts parts, and a part or an alive only when it does.
+		if (attempt === undefined || message === undefined || message.attempt !== label
 			|| message.invocation !== attempt.invocation || message.operation !== attempt.operation
 			|| context.delivery.source.endpoint !== attempt.endpoint || context.delivery.source.originNodeId !== attempt.host) {
 			discarded++;
 			return;
 		}
-		attempt.take(message);
+		const takes = message.type === "end" ? Object.hasOwn(message, "parts") === attempt.parts
+			: message.type === "part" || message.type === "alive" ? attempt.parts : false;
+		if (!takes) {
+			discarded++;
+			return;
+		}
+		attempt.take(message as EndMessage | PartMessage | AliveMessage);
 	});
+
+	/** Submits a message from the reply endpoint to an operation's endpoint, pinned to the host; what AGP makes of it changes nothing. */
+	const submit = (endpoint: string, host: string, attempt: string, message: unknown, timeoutMs: number): void => {
+		try {
+			Promise.resolve(node.send(REPLY_ENDPOINT as EndpointName, endpoint as EndpointName, message as JsonObject, {
+				correlationId: attempt as never,
+				timeoutMs,
+				destinationSelector: { originNodeId: host as never, mode: "pinned" },
+			})).catch(() => undefined);
+		} catch {
+			// A send AGP's port throws on synchronously changes nothing either.
+		}
+	};
 
 	const invoke = async (call: CallRequest): Promise<CallLayerEnding> => {
 		// The bound starts when the caller invokes (EM12): its deadline is read before anything else is done.
 		const start = read();
 		// Then each field of the request is read once, and only what was read is used from here on.
-		const { host, service, operation, input, bound, repeat, signal, invocation: given } = readCallRequest(call);
-		const deadline = start + bound;
+		const { host, service, operation, input, bound, repeat, signal, onPart, invocation: given } = readCallRequest(call);
+		let deadline = start + bound;
+		const parts = onPart !== undefined;
+		// A call accepting parts carries the greater of 1 and half its bound, rounded down (EM12).
+		const aliveWithinMs = parts ? Math.max(1, Math.floor(bound / 2)) : undefined;
 		const invocation = given ?? makeInvocationId(identities);
 		const attempt = makeAttemptId(identities, invocation);
 		const address = { invocation, attempt, operation };
-		const request = writeRequest(address, input);
+		const request = writeRequest(address, input, aliveWithinMs);
 		const sendable = requestSendable(request);
 		// Prepared: the call's clock is read first, so a bound that passed while preparing wins, and nothing is sent.
 		const left = deadline - read();
@@ -173,7 +209,7 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 		if (!sendable) return Object.freeze({ ending: "refused", ...address, refusal: notSendable() });
 		const endpoint = `${service}/${operation}`;
 
-		/** True once the bound has passed on the call's clock; a reading the port cannot give shows nothing passed. */
+		/** True once the deadline has passed on the call's clock; a reading the port cannot give shows nothing passed. */
 		const boundPassed = (): boolean => {
 			try {
 				return read() >= deadline;
@@ -186,19 +222,54 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 			let decided = false;
 			let lastReport: DeliveryReport | null = null;
 			let timer: ClockTimer | undefined;
-			/** Settles the chosen ending; cancelling the bound's timer comes after, and its failure changes nothing. */
+			let aliveTimer: ClockTimer | undefined;
+			// What a call in parts has taken, whether its deadline still moves, and the one cancel it may submit.
+			let taken = 0;
+			let moving = parts;
+			let admitted = false;
+			let cancelWanted = false;
+			let cancelled = false;
+			const cancel = (): void => {
+				if (cancelled) return;
+				cancelled = true;
+				submit(endpoint, host, attempt, writeCancel(address), bound);
+			};
+			/** Wants the one cancel: submitted now when AGP has admitted the request, else when its receipt arrives. */
+			const wantCancel = (): void => {
+				cancelWanted = true;
+				if (admitted) cancel();
+			};
+			const onAbort = (): void => {
+				if (decided) return;
+				// From the abort the deadline stands where it is, the earlier of it and the bound after the abort (EM12).
+				moving = false;
+				wantCancel();
+			};
+			/** Settles the chosen ending; cancelling the timers comes after, and their failure changes nothing. */
 			const settle = (ending: CallLayerEnding): void => {
 				decided = true;
 				waiting.delete(attempt);
 				resolve(Object.freeze(ending));
-				if (timer === undefined) return;
-				try {
-					timer.cancel();
-				} catch {
-					// The ending is settled; a timer that still runs finds the invocation decided.
+				if (signal !== undefined) {
+					try {
+						signal.removeEventListener("abort", onAbort);
+					} catch {
+						// A signal that cannot be unlistened finds the call decided.
+					}
+				}
+				// A call in parts that ends other than by an end stops the host (EM12).
+				if (parts && ending.ending === "unknown" && (ending.reason === "bound-passed" || ending.reason === "part-missing")) wantCancel();
+				for (const pending of [aliveTimer, timer]) {
+					if (pending === undefined) continue;
+					try {
+						pending.cancel();
+					} catch {
+						// The ending is settled; a timer that still runs finds the invocation decided.
+					}
 				}
 			};
 			const atBound = (): void => settle({ ending: "unknown", ...address, reason: "bound-passed", agpCode: null, deliveryReport: lastReport });
+			const partMissing = (): void => settle({ ending: "unknown", ...address, reason: "part-missing", agpCode: null, deliveryReport: lastReport });
 			/** An event observed now: when the bound has already passed on the call's clock, the bound came first. */
 			const observed = (ending: () => CallLayerEnding): void => {
 				if (decided) return;
@@ -215,12 +286,45 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 					lastReport = outcome.kind;
 				}
 			};
-			const take = (message: EndMessage): void => observed(() => {
+			const endOf = (message: EndMessage): CallLayerEnding => {
 				const ending = { invocation: message.invocation, attempt: message.attempt, operation: message.operation };
 				if (message.outcome === "answered") return { ending: "answered", ...ending, answer: message.answer };
 				if (message.outcome === "refused") return { ending: "refused", ...ending, refusal: message.refusal };
 				return { ending: "unknown", ...ending, reason: message.reason, agpCode: message.agpCode, deliveryReport: lastReport };
-			});
+			};
+			/** A sign of life taken before the deadline moves it to the bound after the moment it was taken (EM12). */
+			const lived = (): void => {
+				if (!moving) return;
+				try {
+					deadline = read() + bound;
+				} catch {
+					// A reading the port cannot give moves nothing.
+				}
+			};
+			const take = (message: EndMessage | PartMessage | AliveMessage): void => {
+				if (decided) return;
+				// A message read at or after the deadline is not taken (EM12).
+				if (boundPassed()) return atBound();
+				if (message.type === "alive") return lived();
+				if (message.type === "part") {
+					if (message.sequence <= taken) {
+						discarded++;
+						return;
+					}
+					if (message.sequence > taken + 1) return partMissing();
+					taken++;
+					lived();
+					const part: AnswerPart = Object.freeze({ sequence: message.sequence, answer: message.answer });
+					try {
+						observePromises(onPart?.(part));
+					} catch (error) {
+						observePromises(error);
+					}
+					return;
+				}
+				if (parts && message.parts !== taken) return partMissing();
+				settle(endOf(message));
+			};
 
 			/**
 			 * A wakeup of the bound's timer is not an event (EM12): the call's clock is read, and while the deadline
@@ -243,10 +347,21 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 					atBound();
 				}
 			};
+			/** A call in parts submits an `alive` each `aliveWithinMs` since its request or its last `alive` (EM12). */
+			const beat = (): void => {
+				if (decided || aliveWithinMs === undefined) return;
+				submit(endpoint, host, attempt, writeAlive(address), aliveWithinMs);
+				try {
+					aliveTimer = clock.schedule(aliveWithinMs, beat);
+				} catch {
+					// A clock that cannot schedule leaves the bound to end the call.
+				}
+			};
 			// A port that cannot schedule the bound is a fault of the port: invoke rejects, and nothing is sent.
 			timer = clock.schedule(left, wake);
 			if (decided) return;
-			waiting.set(attempt, { invocation, operation, endpoint, host, take });
+			waiting.set(attempt, { invocation, operation, endpoint, host, parts, take });
+			if (signal !== undefined && !signal.aborted) signal.addEventListener("abort", onAbort, { once: true });
 			let sending: Promise<{ readonly messageId: string }>;
 			try {
 				sending = node.send(REPLY_ENDPOINT as EndpointName, endpoint as EndpointName, request as unknown as JsonObject, {
@@ -259,8 +374,18 @@ export async function createCaller(options: CallerOptions): Promise<Caller> {
 			} catch (error) {
 				sending = Promise.reject(error);
 			}
+			if (aliveWithinMs !== undefined) {
+				try {
+					aliveTimer = clock.schedule(aliveWithinMs, beat);
+				} catch {
+					// A clock that cannot schedule leaves the bound to end the call.
+				}
+			}
 			// A fault of AGP's port in these reactions leaves the bound to end the call; none goes unhandled.
 			Promise.resolve(sending).then((receipt) => {
+				// Admitted: a cancel the call wants, before or after its ending, goes now (EM12).
+				admitted = true;
+				if (cancelWanted) cancel();
 				if (decided) return;
 				const id = receipt.messageId as never;
 				observe(node.disposition(id));

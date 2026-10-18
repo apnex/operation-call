@@ -10,6 +10,7 @@
  */
 import type { AgpNode } from "@agp/node";
 import type { OperationCaller } from "../call-types.js";
+import type { CallClock } from "../system-ports.js";
 
 /** One host node: the suite opens operation-call hosts on it and declares its fixture operations there. */
 export interface SuiteHost {
@@ -21,6 +22,12 @@ export interface SuiteHost {
 
 /** The fixture's hooks. */
 export interface CallerSuiteHooks {
+	/**
+	 * The clock the call's bound runs on, as a clock port: the suite's fixture hosts keep time on it too, so a
+	 * host's signs of life run on the clock the case moves (zorg's target, EM11, EM12). In a session on the real
+	 * clock it is the system's own.
+	 */
+	callClock(): CallClock;
 	/** Advances the clock the call's bound runs on, running everything due, what fell due earlier included. */
 	advanceCallClock(ms: number): void;
 	/**

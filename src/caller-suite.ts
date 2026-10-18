@@ -8,8 +8,9 @@
  * operation-call's own contract tests run it directly against its own caller; operation-proxy runs it
  * against its client half, through its proxy, so the caller is any implementation of the caller interface.
  * The suite holds every case a caller can observe (zorg's target, EM12): invalid arguments, every ending's
- * exact fields and freezing, when an event happens on the call's clock, remote descriptions, and a clock port
- * that throws at a reading or a timer's cancellation as an answer, a refusal or the bound decides included;
+ * exact fields and freezing, when an event happens on the call's clock, remote descriptions, a clock port
+ * that throws at a reading or a timer's cancellation as an answer, a refusal or the bound decides included, and
+ * answers in parts and cancelling (zorg's D64), against fixture hosts keeping time on the call bound's clock;
  * cases a caller cannot observe - malformed requests, evidence, declarations and E9's corpus - stay in
  * operation-call's own contract files. The harness states its hop allowance (zorg's D45): 0 for a direct
  * caller, and for a caller across a hop the allowance by which its far side's call ends sooner, so a case
@@ -26,6 +27,7 @@ import { clockFaultCases } from "./suite/clock-fault-cases.js";
 import { eventTimeCases, preparationTimeCases } from "./suite/event-time-cases.js";
 import { honestCallEndingCases } from "./suite/honest-call-ending-cases.js";
 import { notDeliveredCases } from "./suite/not-delivered-cases.js";
+import { answerInPartsCases, cancelInvocationCases } from "./suite/parts-and-cancel-cases.js";
 import { callRefusalCases, instanceSelectCases, invocationIdentityCases } from "./suite/refusal-and-identity-cases.js";
 import type { CallerSuiteHarness, SuiteCase, SuiteRegister } from "./suite/suite-types.js";
 
@@ -41,12 +43,14 @@ const CASES: { readonly [row: string]: readonly SuiteCase[] } = {
 	"call-refusal": callRefusalCases,
 	"operation-descriptions": descriptionCases,
 	"advertiser-instance-select": instanceSelectCases,
+	"answer-in-parts": answerInPartsCases,
+	"cancel-invocation": cancelInvocationCases,
 };
 
 /** The rows the suite holds caller cases for, and the rows deferred with the ruling that defers them. */
 export const callerSuiteRows = Object.freeze({
 	rows: Object.freeze(Object.keys(CASES)),
-	deferred: Object.freeze({ "answer-in-parts": "D15", "cancel-invocation": "D15" }),
+	deferred: Object.freeze({}),
 });
 
 /**

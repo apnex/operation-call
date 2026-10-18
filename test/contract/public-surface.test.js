@@ -18,6 +18,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
 const map = JSON.parse(fs.readFileSync(path.join(root, "export-map.json"), "utf8"));
 const publicName = (p) => p === "." ? pkg.name : `${pkg.name}/${p.slice(2)}`;
 const FENCED = ["honest-call-ending", "caller-chosen-bound", "invocation-identity", "request-correlation", "not-delivered-signal", "call-refusal", "operation-descriptions", "declared-shape-validation", "serve-named-operations", "peer-identity-evidence", "advertiser-instance-select"];
+/** The rows zorg's Delta 1 leaves out that a later delta built: answer-in-parts and cancel-invocation, Delta 4's stage 4. */
+const BUILT_LATER = ["answer-in-parts", "cancel-invocation"];
 
 test("the export map names the package and exactly its exported paths", () => {
 	assert.equal(map.package, pkg.name);
@@ -55,11 +57,12 @@ test("every contract row is served by an export or deferred with a ruling, never
 		assert.ok(rows.includes(row), `${row} is not a row of CONTRACT.md`);
 	}
 	for (const row of FENCED) assert.ok(served.has(row) && !map.deferred[row], `the fenced row ${row} is served`);
-	assert.deepEqual(Object.keys(map.deferred).sort(), ["answer-in-parts", "cancel-invocation"], "only the rows D15 leaves out are deferred");
+	for (const row of BUILT_LATER) assert.ok(served.has(row) && !map.deferred[row], `the row ${row}, built later, is served`);
+	assert.deepEqual(Object.keys(map.deferred), [], "nothing is deferred: the rows D15 left out are built in zorg's Delta 4 (D64)");
 });
 
-test("every fenced row has a contract test file named for it", () => {
-	for (const row of FENCED) assert.ok(fs.existsSync(path.join(root, "test", "contract", `${row}.test.js`)), `${row}.test.js`);
+test("every fenced row, and every row a later delta built, has a contract test file named for it", () => {
+	for (const row of [...FENCED, ...BUILT_LATER]) assert.ok(fs.existsSync(path.join(root, "test", "contract", `${row}.test.js`)), `${row}.test.js`);
 });
 
 test("the caller suite lists its rows and the deferred ones as the map does", async () => {
