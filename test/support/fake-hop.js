@@ -22,6 +22,9 @@
 // `hop-stalled` only when the far side has gone quiet for a whole bound; a part or an `alive` read at or after
 // that deadline is not taken. From an abort, a sign of life moves the deadline to the bound after the abort and
 // no further (Delta 4's amendment 4), so an `alive` written before the abort and read after it still counts.
+// The far call is given the stand-in's own abort signal, which the caller's abort fires, as a relayed `abort`
+// does, and which fires too when the stand-in ends a call accepting parts `hop-stalled`, so the far call is
+// cancelled rather than left running (operation-proxy's PX5).
 import { openTopology } from "./fixture.js";
 
 /** True for a bound EM12 allows; any other is handed on as read, for the call layer to throw as it does. */
@@ -80,6 +83,15 @@ function hopCaller(inner, clock, allowanceMs, held) {
 					// A reading that throws moves nothing.
 				}
 			};
+			// The far call's abort signal, which the caller's fires and a stalled call in parts fires too (PX5). A
+			// signal that is not an AbortSignal is handed on as read, for the call layer to throw as it does.
+			const far = new AbortController();
+			const genuine = read.signal instanceof AbortSignal;
+			const ownSignal = genuine || (parts && read.signal === undefined);
+			if (genuine) {
+				if (read.signal.aborted) far.abort(read.signal.reason);
+				else read.signal.addEventListener("abort", () => far.abort(read.signal.reason), { once: true });
+			}
 			let settle = () => undefined;
 			/** When the stand-in last handed across a part or an `alive`, from which its next `alive` falls due (PX5). */
 			let lastWritten = clock.now();
@@ -93,7 +105,7 @@ function hopCaller(inner, clock, allowanceMs, held) {
 				lived();
 				return read.onPart(part);
 			} : undefined;
-			const far = inner.invoke({ ...read, invocation, bound: farBound, ...(parts ? { onPart } : {}) });
+			const farCall = inner.invoke({ ...read, invocation, bound: farBound, ...(ownSignal ? { signal: far.signal } : {}), ...(parts ? { onPart } : {}) });
 			return new Promise((resolve, reject) => {
 				let ended = false;
 				let attempt = null;
@@ -114,9 +126,11 @@ function hopCaller(inner, clock, allowanceMs, held) {
 					resolve(ending);
 					cancel();
 				};
-				const stalled = () => Object.freeze({
-					ending: "unknown", invocation, attempt, operation: read.operation, reason: "hop-stalled", agpCode: null, deliveryReport: null,
-				});
+				const stalled = () => {
+					// A call in parts ended without its far ending: the far call is cancelled (PX5).
+					if (parts && !farEnded) far.abort(new Error("the hop stalled"));
+					return Object.freeze({ ending: "unknown", invocation, attempt, operation: read.operation, reason: "hop-stalled", agpCode: null, deliveryReport: null });
+				};
 				/** True when the call has ended, or its deadline passed as a sign of life is read, which ends it. */
 				settle = () => {
 					if (ended) return true;
@@ -158,7 +172,7 @@ function hopCaller(inner, clock, allowanceMs, held) {
 					};
 					aliveTimer = clock.schedule(every, beat);
 				}
-				far.then((ending) => {
+				farCall.then((ending) => {
 					farEnded = true;
 					attempt = ending.attempt;
 					if (held) return;
