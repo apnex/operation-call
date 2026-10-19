@@ -16,8 +16,9 @@
 // ending at all, so every call that ends at its bound ends `hop-stalled`: the case the suite must refuse.
 // A call accepting parts (zorg's D64; operation-proxy's PX4, PX5 as Delta 4's stage 6 has them): the stand-in's
 // own deadline is a bound on signs of life, moved a bound on by each part it hands to the caller's `onPart` and
-// by each `alive` it writes the caller - one whenever half the far side's bound passes while the far call is in
-// flight, read a turn of the event loop after it is written, as one crossing a channel is - so it ends
+// by each `alive` it writes the caller - one whenever half the far side's bound passes, while the far call is in
+// flight, since it last handed across a part or an `alive`, read a turn of the event loop after it is written,
+// as one crossing a channel is - so it ends
 // `hop-stalled` only when the far side has gone quiet for a whole bound; a part or an `alive` read at or after
 // that deadline is not taken. From an abort, a sign of life moves the deadline to the bound after the abort and
 // no further (Delta 4's amendment 4), so an `alive` written before the abort and read after it still counts.
@@ -80,8 +81,15 @@ function hopCaller(inner, clock, allowanceMs, held) {
 				}
 			};
 			let settle = () => undefined;
+			/** When the stand-in last handed across a part or an `alive`, from which its next `alive` falls due (PX5). */
+			let lastWritten = clock.now();
 			const onPart = parts ? (part) => {
 				if (settle()) return undefined;
+				try {
+					lastWritten = clock.now();
+				} catch {
+					// The next alive counts on from the last time known.
+				}
 				lived();
 				return read.onPart(part);
 			} : undefined;
@@ -132,11 +140,21 @@ function hopCaller(inner, clock, allowanceMs, held) {
 					const every = Math.max(1, Math.floor(farBound / 2));
 					const beat = () => {
 						if (ended || farEnded) return;
-						// Written now, read a turn later, as an `alive` crossing a channel is.
-						setImmediate(() => {
-							if (!settle()) lived();
-						});
-						aliveTimer = clock.schedule(every, beat);
+						let now;
+						try {
+							now = clock.now();
+						} catch {
+							now = lastWritten + every;
+						}
+						const remaining = lastWritten + every - now;
+						if (remaining <= 0) {
+							lastWritten = now;
+							// Written now, read a turn later, as an `alive` crossing a channel is.
+							setImmediate(() => {
+								if (!settle()) lived();
+							});
+						}
+						aliveTimer = clock.schedule(remaining <= 0 ? every : Math.ceil(remaining), beat);
 					};
 					aliveTimer = clock.schedule(every, beat);
 				}
