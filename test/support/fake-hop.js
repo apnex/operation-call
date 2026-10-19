@@ -17,7 +17,10 @@
 // A call accepting parts (zorg's D64; operation-proxy's PX4, PX5 as Delta 4's stage 6 has them): the stand-in's
 // own deadline is a bound on signs of life, moved a bound on by each part it hands to the caller's `onPart` and
 // by each `alive` it writes the caller - one whenever half the far side's bound passes while the far call is in
-// flight - so it ends `hop-stalled` only when the far side has gone quiet for a whole bound.
+// flight, read a turn of the event loop after it is written, as one crossing a channel is - so it ends
+// `hop-stalled` only when the far side has gone quiet for a whole bound; a part or an `alive` read at or after
+// that deadline is not taken. From an abort, a sign of life moves the deadline to the bound after the abort and
+// no further (Delta 4's amendment 4), so an `alive` written before the abort and read after it still counts.
 import { openTopology } from "./fixture.js";
 
 /** True for a bound EM12 allows; any other is handed on as read, for the call layer to throw as it does. */
@@ -47,15 +50,41 @@ function hopCaller(inner, clock, allowanceMs, held) {
 			const parts = typeof read.onPart === "function";
 			let deadline = start + read.bound;
 			let farEnded = false;
-			/** A sign of life the stand-in hands across moves its deadline a bound on. */
+			let abortedAt;
+			if (parts && read.signal !== undefined) {
+				const noteAbort = () => {
+					try {
+						abortedAt ??= clock.now();
+					} catch {
+						abortedAt ??= start;
+					}
+				};
+				if (read.signal.aborted === true) abortedAt = start;
+				else read.signal.addEventListener?.("abort", noteAbort, { once: true });
+			}
+			/** True once the stand-in's deadline has passed on its clock; a reading that throws shows nothing passed. */
+			const passed = () => {
+				try {
+					return clock.now() >= deadline;
+				} catch {
+					return false;
+				}
+			};
+			/** A sign of life read before the deadline moves it a bound on, or to the bound after an abort, no further. */
 			const lived = () => {
 				try {
-					deadline = clock.now() + read.bound;
+					const moved = clock.now() + read.bound;
+					deadline = abortedAt === undefined ? moved : Math.min(moved, abortedAt + read.bound);
 				} catch {
 					// A reading that throws moves nothing.
 				}
 			};
-			const onPart = parts ? (part) => { lived(); return read.onPart(part); } : undefined;
+			let settle = () => undefined;
+			const onPart = parts ? (part) => {
+				if (settle()) return undefined;
+				lived();
+				return read.onPart(part);
+			} : undefined;
 			const far = inner.invoke({ ...read, invocation, bound: farBound, ...(parts ? { onPart } : {}) });
 			return new Promise((resolve, reject) => {
 				let ended = false;
@@ -80,6 +109,13 @@ function hopCaller(inner, clock, allowanceMs, held) {
 				const stalled = () => Object.freeze({
 					ending: "unknown", invocation, attempt, operation: read.operation, reason: "hop-stalled", agpCode: null, deliveryReport: null,
 				});
+				/** True when the call has ended, or its deadline passed as a sign of life is read, which ends it. */
+				settle = () => {
+					if (ended) return true;
+					if (!passed()) return false;
+					end(stalled());
+					return true;
+				};
 				const wake = () => {
 					if (ended) return;
 					let remaining;
@@ -96,7 +132,10 @@ function hopCaller(inner, clock, allowanceMs, held) {
 					const every = Math.max(1, Math.floor(farBound / 2));
 					const beat = () => {
 						if (ended || farEnded) return;
-						lived();
+						// Written now, read a turn later, as an `alive` crossing a channel is.
+						setImmediate(() => {
+							if (!settle()) lived();
+						});
 						aliveTimer = clock.schedule(every, beat);
 					};
 					aliveTimer = clock.schedule(every, beat);
