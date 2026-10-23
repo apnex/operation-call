@@ -8,7 +8,7 @@ import { ManualClock } from "@agp/core";
 import { createNode } from "@agp/node";
 import { createLoopbackFabric } from "@agp/transport-loopback";
 import { createCaller, systemCallClock } from "@apnex/operation-call";
-import { createManualCallClock } from "./manual-call-clock.js";
+import { createEarlyWakingClock, createManualCallClock } from "./manual-call-clock.js";
 
 const REPLY = "operation-call/replies";
 let fabrics = 0;
@@ -101,7 +101,8 @@ export async function openTopology(options = {}) {
 	} });
 	const agpClock = new ManualClock();
 	const manualClock = createManualCallClock();
-	const callClock = options.realCallClock ? systemCallClock : manualClock;
+	const timedClock = !options.realCallClock && options.earlyWakeMs !== undefined ? createEarlyWakingClock(manualClock, options.earlyWakeMs) : manualClock;
+	const callClock = options.realCallClock ? systemCallClock : timedClock;
 	const faultableClock = faultableCallClock(callClock);
 	// Each rejection left unhandled and each exception left uncaught while the topology is open.
 	const unhandled = [];

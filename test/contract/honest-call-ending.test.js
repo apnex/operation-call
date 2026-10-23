@@ -26,7 +26,7 @@
 // still ends the call at its bound.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createCaller } from "@apnex/operation-call";
+import { createCaller, systemCallClock } from "@apnex/operation-call";
 import { registerCallerSuite } from "@apnex/operation-call/caller-suite";
 import { controlledCaller, turns } from "../support/controlled-node.js";
 import { createFakeNode } from "../support/fake-node.js";
@@ -234,4 +234,27 @@ test("a call clock whose reading throws once the request is sent cannot show the
 	manual.advance(100);
 	await turns();
 	assert.deepEqual([call.value?.ending, call.value?.reason, call.value?.agpCode], ["unknown", "bound-passed", null]);
+});
+
+test("EM12, D6-E1: on the system's own clock, a direct caller's silent invocation never ends before its bound, a timer waking early on the clock it reads included, and ends unknown with bound-passed", { timeout: 30_000 }, async () => {
+	const session = await directHarness.open({ realCallClock: true });
+	try {
+		const [ha] = session.hosts;
+		const { createOperationHost } = await import("@apnex/operation-call");
+		const host = await createOperationHost(ha.node, { service: "svc" });
+		assert.equal(host.opened, true);
+		const any = { $schema: "urn:apnex:shape-check:dialect:1" };
+		assert.equal((await host.host.declare({ name: "silent", input: any, answers: "whole" }, (_input, c) => new Promise((_resolve, reject) => c.signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true })))).declared, true);
+		await session.hooks.ready(ha.nodeId, "svc/silent");
+		const bound = 20;
+		for (let i = 0; i < 10; i++) {
+			const start = systemCallClock.now();
+			const ending = await session.caller.invoke({ host: ha.nodeId, service: "svc", operation: "silent", input: {}, bound });
+			const elapsed = systemCallClock.now() - start;
+			assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "bound-passed", null], `silent call ${i + 1}: the ending at the bound`);
+			assert.ok(elapsed >= bound, `silent call ${i + 1} of ${bound} ms not to end before ${bound} ms, but it ended at ${elapsed} ms`);
+		}
+	} finally {
+		await session.close();
+	}
 });

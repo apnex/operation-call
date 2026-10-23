@@ -114,6 +114,12 @@ export interface CallerSuiteOpenOptions {
 	 * move the call bound's clock are then not used.
 	 */
 	readonly realCallClock?: boolean;
+	/**
+	 * On the controlled clock, makes every timer wake this many milliseconds before its delay has passed on
+	 * `now()`, so a case shows that an early timer wakeup re-arms for the time remaining and never ends a call
+	 * before its bound (zorg's target, EM12; D69, BL27).
+	 */
+	readonly earlyWakeMs?: number;
 }
 
 /** What a consumer of the suite supplies. */

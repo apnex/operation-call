@@ -151,3 +151,38 @@ test("the default clock calls back only once its delay has passed on its own rea
 	await new Promise((resolve) => systemCallClock.schedule(20, resolve));
 	assert.equal(cancelledRan, false, "a cancelled timer never calls back");
 });
+
+test("EM12, D6-E1: on the system's own clock, a direct caller's silent invocation never ends before its bound, and an answer produced after the bound while the host occupied the thread loses to bound-passed", { timeout: 30_000 }, async () => {
+	const session = await directHarness.open({ realCallClock: true });
+	try {
+		const [ha] = session.hosts;
+		const { createOperationHost } = await import("@apnex/operation-call");
+		const host = await createOperationHost(ha.node, { service: "svc" });
+		assert.equal(host.opened, true);
+		const any = { $schema: "urn:apnex:shape-check:dialect:1" };
+		let busyRuns = 0;
+		assert.equal((await host.host.declare({ name: "silent", input: any, answers: "whole" }, (_input, c) => new Promise((_resolve, reject) => c.signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true })))).declared, true);
+		assert.equal((await host.host.declare({ name: "busy", input: any, answers: "whole" }, (input) => {
+			busyRuns++;
+			const ms = input.ms;
+			const stop = systemCallClock.now() + ms;
+			while (systemCallClock.now() < stop) { /* occupies the host's thread past the bound */ }
+			return { outcome: "answered", answer: ms };
+		})).declared, true);
+		await session.hooks.ready(ha.nodeId, "svc/silent");
+		await session.hooks.ready(ha.nodeId, "svc/busy");
+		const bound = 20;
+		for (let i = 0; i < 10; i++) {
+			const start = systemCallClock.now();
+			const ending = await session.caller.invoke({ host: ha.nodeId, service: "svc", operation: "silent", input: {}, bound });
+			const elapsed = systemCallClock.now() - start;
+			assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "bound-passed", null], `silent call ${i + 1}: the ending at the bound`);
+			assert.ok(elapsed >= bound, `silent call ${i + 1} of ${bound} ms not to end before ${bound} ms, but it ended at ${elapsed} ms`);
+		}
+		const afterBound = await session.caller.invoke({ host: ha.nodeId, service: "svc", operation: "busy", input: { ms: 75 }, bound: 50 });
+		assert.equal(busyRuns, 1, "the busy operation ran");
+		assert.deepEqual([afterBound.ending, afterBound.reason, afterBound.agpCode], ["unknown", "bound-passed", null], "the answer produced at 75 ms of a 50 ms bound loses to bound-passed");
+	} finally {
+		await session.close();
+	}
+});

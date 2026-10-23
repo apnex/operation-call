@@ -139,7 +139,7 @@ async function exposeScripted(node: AgpNode, holds: Latch[], scripted: Scripted[
 }
 
 /** Opens a fixture host on one node, declaring every fixture operation, keeping time on the call bound's clock. */
-async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"][number]["node"], clock: CallClock): Promise<FixtureHost> {
+async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"][number]["node"], clock: CallClock, moveCallClock?: (ms: number) => void): Promise<FixtureHost> {
 	const opening = await createOperationHost(node, { service: SERVICE, clock });
 	check(opening.opened, `the fixture host on ${nodeId} opens`);
 	const runs: Run[] = [];
@@ -176,8 +176,14 @@ async function openFixtureHost(nodeId: string, node: CallerSuiteSession["hosts"]
 		}],
 		busy: [any, (input) => {
 			const ms = (input as { ms: number }).ms;
-			const stop = systemCallClock.now() + ms;
-			while (systemCallClock.now() < stop) { /* occupies the host's thread, as a slow operation does */ }
+			if (moveCallClock !== undefined) {
+				// Moves the call bound's clock synchronously while the handler is on the call stack, holding back
+				// scheduled callbacks, as a slow operation occupying its thread does (EM12; D69, BL27).
+				moveCallClock(ms);
+			} else {
+				const stop = systemCallClock.now() + ms;
+				while (systemCallClock.now() < stop) { /* occupies the host's thread, as a slow operation does */ }
+			}
 			return { outcome: "answered", answer: ms };
 		}],
 		shaped: [SHAPED_INPUT, (input) => ({ outcome: "answered", answer: input })],
@@ -234,8 +240,9 @@ export async function openCase(harness: CallerSuiteHarness, options: CallerSuite
 	try {
 		const [ha, hb] = session.hosts;
 		const clock = session.hooks.callClock();
-		const a = await openFixtureHost(ha.nodeId, ha.node, clock);
-		const b = await openFixtureHost(hb.nodeId, hb.node, clock);
+		const move = options.realCallClock ? undefined : (ms: number): void => session.hooks.moveCallClock(ms);
+		const a = await openFixtureHost(ha.nodeId, ha.node, clock, move);
+		const b = await openFixtureHost(hb.nodeId, hb.node, clock, move);
 		for (const host of [a, b]) {
 			for (const name of [...FIXTURE_OPERATIONS, ...PARTS_OPERATIONS, SCRIPTED, "describe"]) await session.hooks.ready(host.nodeId, `${SERVICE}/${name}`);
 		}
