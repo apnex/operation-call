@@ -24,7 +24,7 @@ export function newAttempt() {
  * "admit" (the default), "hold", or `{ reject: code }` (code null for none). A held send is admitted or
  * refused later through its `admit()` or `refuse(code)`.
  */
-export async function controlledHost({ service = "svc", clock = createManualCallClock(0), evidence } = {}) {
+export async function controlledHost({ service = "svc", clock = createManualCallClock(0), evidence, mode, minimumProtection } = {}) {
 	const sends = [];
 	const handlers = new Map();
 	const fate = { decide: () => "admit" };
@@ -33,7 +33,7 @@ export async function controlledHost({ service = "svc", clock = createManualCall
 			handlers.set(endpoint, handler);
 			return { close: async () => { handlers.delete(endpoint); } };
 		},
-		send(source, destination, payload, options) {
+		sendDirectPeer(source, destination, payload, options) {
 			const outcome = Promise.withResolvers();
 			const entry = {
 				source, destination, payload, options, state: "held",
@@ -47,9 +47,18 @@ export async function controlledHost({ service = "svc", clock = createManualCall
 			return outcome.promise;
 		},
 	};
-	const opening = await createOperationHost(node, { service, clock, ...(evidence === undefined ? {} : { evidence }) });
+	const opening = await createOperationHost(node, {
+		service,
+		clock,
+		...(evidence === undefined ? {} : { evidence }),
+		...(mode === undefined ? {} : { mode }),
+		...(minimumProtection === undefined ? {} : { minimumProtection }),
+	});
 	if (!opening.opened) throw new Error("the controlled host did not open");
 	const nodeSignal = new AbortController();
+	const defaultAssociation = mode === "authenticated"
+		? { mode: "authenticated", issuer: "zorg-credential-issuer/v1", principal: "alice", instanceBinding: "inst-1" }
+		: { mode: "unauthenticated" };
 	return {
 		host: opening.host, clock, sends, fate, nodeSignal,
 		/** Declares an operation, whole or in parts. */
@@ -58,10 +67,20 @@ export async function controlledHost({ service = "svc", clock = createManualCall
 		 * Delivers a payload to `<service>/<operation>` as AGP would, from `origin`'s reply endpoint under `label`;
 		 * resolves once the host's handler has finished with it - for a request, once its end was sent.
 		 */
-		deliver(operation, payload, { label = payload?.attempt, origin = "caller" } = {}) {
+		deliver(operation, payload, opts = {}) {
+			const { label = payload?.attempt, origin = "caller" } = opts;
+			const hasDirectPeer = Object.hasOwn(opts, "directPeer");
+			const directPeer = hasDirectPeer ? opts.directPeer : { originNodeId: origin, authorizationAssociation: defaultAssociation };
 			const handler = handlers.get(`${service}/${operation}`);
 			if (handler === undefined) throw new Error(`no endpoint ${service}/${operation}`);
-			return handler(payload, { delivery: { correlationId: label, source: { endpoint: REPLIES, originNodeId: origin } }, signal: nodeSignal.signal });
+			return handler(payload, {
+				delivery: {
+					correlationId: label,
+					source: { endpoint: REPLIES, originNodeId: origin },
+					...(directPeer === undefined ? {} : { directPeer }),
+				},
+				signal: nodeSignal.signal,
+			});
 		},
 		/** The sends of one type for an attempt, in order. */
 		sent: (type, attempt) => sends.filter((s) => s.payload.type === type && (attempt === undefined || s.payload.attempt === attempt)),

@@ -26,7 +26,7 @@
  * holds `parts`, the parts admitted, when the request carried `aliveWithinMs`. A request is finished once the
  * host's last send for it has settled, and the host then drops its record and stops its timers.
  */
-import type { AgpNode, EndpointBinding, EndpointName, JsonObject } from "@agp/node";
+import type { AgpNode, DirectPeerDeliveryContext, EndpointBinding, EndpointName, JsonObject } from "@agp/node";
 import { observePromises, prepareShapeDocument, readPlainJson, snapshotJson, type JsonInput, type JsonValue, type PreparedShape } from "@apnex/shape-check";
 import { systemCallClock, type CallClock, type ClockTimer } from "./system-ports.js";
 import { checkDeclarationForm, describe, DESCRIBE_INPUT, hostRefusal, judgeDeclaration, nameDetails, type Description, type DescribedOperation, type HostRefusal, type OperationDeclaration } from "./declarations.js";
@@ -40,6 +40,12 @@ export type DeliveryContext = Parameters<Parameters<AgpNode["expose"]>[1]>[1]["d
 /** The host's evidence port: given a request's delivery context as it arrives, the evidence of who is calling. */
 export type EvidenceFunction = (delivery: DeliveryContext) => unknown;
 
+/** The peer authorization association mode required on incoming deliveries' directPeer targets (zorg's D75). */
+export type HostMode = "unauthenticated" | "authenticated";
+
+/** The minimum transport protection required on `node.sendDirectPeer` replies (zorg's D75). */
+export type HostMinimumProtection = "none" | "integrity" | "confidentiality-and-integrity";
+
 /** What a host is opened with. */
 export interface HostOptions {
 	/** The name the host serves under, matching EM1's pattern; its operations are `<service>/<operation>`. */
@@ -48,6 +54,10 @@ export interface HostOptions {
 	readonly evidence?: EvidenceFunction;
 	/** The clock the host's signs of life run on (EM11); operation-call's default when absent. */
 	readonly clock?: CallClock;
+	/** Required direct-peer authorization association mode (`"unauthenticated"` when absent; zorg's D75). */
+	readonly mode?: HostMode;
+	/** Minimum transport protection on `node.sendDirectPeer` replies (`"confidentiality-and-integrity"` when mode is `"authenticated"`, `"none"` when `"unauthenticated"`; zorg's D75). */
+	readonly minimumProtection?: HostMinimumProtection;
 }
 
 /** What an operation is given beside its input. */
@@ -201,13 +211,78 @@ function resultContent(value: unknown): EndContent {
 	return failed;
 }
 
+function captureEligibleDirectPeer(to: DeliveryContext, hostMode: HostMode): DirectPeerDeliveryContext | null {
+	if (to === null || typeof to !== "object") return null;
+	let rawDirectPeer: unknown;
+	try {
+		const desc = Object.getOwnPropertyDescriptor(to, "directPeer");
+		if (desc === undefined || !Object.hasOwn(desc, "value") || desc.enumerable !== true) return null;
+		rawDirectPeer = desc.value;
+	} catch (error) {
+		observePromises(error);
+		return null;
+	}
+	const reading = readPlainJson(rawDirectPeer);
+	if (!reading.ok || reading.value === null || typeof reading.value !== "object" || Array.isArray(reading.value)) return null;
+	const plain = reading.value as { readonly [name: string]: JsonValue };
+	const keys = Object.keys(plain);
+	if (keys.length !== 2 || !Object.hasOwn(plain, "originNodeId") || !Object.hasOwn(plain, "authorizationAssociation")) return null;
+	const originNodeId = plain.originNodeId;
+	let sourceOrigin: unknown;
+	try {
+		sourceOrigin = to.source?.originNodeId;
+	} catch (error) {
+		observePromises(error);
+		return null;
+	}
+	if (typeof originNodeId !== "string" || originNodeId.length === 0 || originNodeId !== sourceOrigin) return null;
+	const assoc = plain.authorizationAssociation;
+	if (assoc === null || typeof assoc !== "object" || Array.isArray(assoc)) return null;
+	const assocRec = assoc as { readonly [name: string]: JsonValue };
+	const assocKeys = Object.keys(assocRec);
+	if (assocRec.mode !== hostMode) return null;
+	if (hostMode === "unauthenticated") {
+		if (assocKeys.length !== 1) return null;
+	} else {
+		if (assocKeys.length !== 4) return null;
+		if (typeof assocRec.issuer !== "string" || assocRec.issuer.length === 0) return null;
+		if (typeof assocRec.principal !== "string" || assocRec.principal.length === 0) return null;
+		if (typeof assocRec.instanceBinding !== "string" || assocRec.instanceBinding.length === 0) return null;
+	}
+	return plain as unknown as DirectPeerDeliveryContext;
+}
+
 /** Opens a host under a name on an AGP node, exposing `<service>/describe`, or refuses an invalid name. */
 export async function createOperationHost(node: AgpNode, options: HostOptions): Promise<HostOpening> {
-	if (!node || typeof node.expose !== "function" || typeof node.send !== "function") throw new TypeError("createOperationHost needs an AGP node");
+	if (!node || typeof node.expose !== "function" || typeof node.sendDirectPeer !== "function") throw new TypeError("createOperationHost needs an AGP node with sendDirectPeer");
 	if (options === null || typeof options !== "object") throw new TypeError("createOperationHost needs { service }");
-	const { service, evidence } = options;
+	let service: unknown;
+	let evidence: HostOptions["evidence"];
+	let rawClock: HostOptions["clock"];
+	let rawMode: unknown;
+	let rawMinimumProtection: unknown;
+	try {
+		service = options.service;
+		evidence = options.evidence;
+		rawClock = options.clock;
+		rawMode = options.mode;
+		rawMinimumProtection = options.minimumProtection;
+	} catch (error) {
+		observePromises(error);
+		throw error;
+	}
 	if (evidence !== undefined && typeof evidence !== "function") throw new TypeError("a host's evidence is a function of the delivery context");
 	if (typeof service !== "string") throw new TypeError("a host's service is a string");
+	if (rawMode !== undefined && rawMode !== "unauthenticated" && rawMode !== "authenticated") {
+		observePromises(rawMode);
+		throw new TypeError("a host's mode is \"unauthenticated\" or \"authenticated\"");
+	}
+	const hostMode: HostMode = rawMode ?? "unauthenticated";
+	if (rawMinimumProtection !== undefined && rawMinimumProtection !== "none" && rawMinimumProtection !== "integrity" && rawMinimumProtection !== "confidentiality-and-integrity") {
+		observePromises(rawMinimumProtection);
+		throw new TypeError("a host's minimumProtection is \"none\", \"integrity\" or \"confidentiality-and-integrity\"");
+	}
+	const minimumProtection: HostMinimumProtection = rawMinimumProtection ?? (hostMode === "authenticated" ? "confidentiality-and-integrity" : "none");
 	if (!isName(service)) return { opened: false, refusal: hostRefusal("invalid-name", "A host serves under a name matching ^[a-z0-9][a-z0-9-]{0,62}$.", nameDetails(service)) };
 
 	const declared: DescribedOperation[] = [];
@@ -216,7 +291,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 	let closed = false;
 	let queue: Promise<unknown> = Promise.resolve();
 
-	const clock = options.clock ?? systemCallClock;
+	const clock = rawClock ?? systemCallClock;
 	if (typeof clock.now !== "function" || typeof clock.schedule !== "function") throw new TypeError("a host's clock offers now and schedule");
 	/** The requests recorded and not yet finished, by attempt identity (EM11). */
 	const records = new Map<string, Recorded>();
@@ -228,15 +303,17 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		return reading;
 	};
 
-	/** Sends a message from an operation's endpoint to the request's source endpoint, pinned to its origin under its label. */
-	const sendTo = (operationName: string, to: DeliveryContext, message: JsonValue): Promise<unknown> => node.send(`${service}/${operationName}` as EndpointName, to.source.endpoint, message as JsonObject, {
+	/** Sends a message from an operation's endpoint to the request's source endpoint over its direct peer channel, under its label. */
+	const sendTo = (operationName: string, to: DeliveryContext, target: DirectPeerDeliveryContext, message: JsonValue): Promise<unknown> => node.sendDirectPeer(`${service}/${operationName}` as EndpointName, to.source.endpoint, message as JsonObject, {
+		target,
+		minimumProtection,
 		...(to.correlationId === undefined ? {} : { correlationId: to.correlationId }),
-		destinationSelector: { originNodeId: to.source.originNodeId, mode: "pinned" },
 	});
 
-	/** Sends an end message for a request, with `parts` when given; an answer that cannot be sent becomes a failed end, sent once. */
-	const reply = async (address: MessageAddress, content: EndContent, to: DeliveryContext, parts?: number): Promise<void> => {
-		const send = (message: JsonValue): Promise<unknown> => sendTo(address.operation, to, message);
+	/** Sends an end message for a request, with `parts` when given; an answer or refusal that cannot be sent becomes a failed end, sent once, and an ineligible directPeer target sends nothing. */
+	const reply = async (address: MessageAddress, content: EndContent, to: DeliveryContext, target: DirectPeerDeliveryContext | null, parts?: number): Promise<void> => {
+		if (target === null) return;
+		const send = (message: JsonValue): Promise<unknown> => sendTo(address.operation, to, target, message);
 		let message = writeEnd(address, content, parts) as unknown as JsonValue;
 		if (content.outcome !== "failed" && !crossesAgp(message)) {
 			message = writeEnd(address, { outcome: "failed", reason: "answer-not-sendable", agpCode: null }, parts) as unknown as JsonValue;
@@ -309,7 +386,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 	};
 
 	/** Submits the host's alive whenever aliveWithinMs passes without a part or alive submitted (EM11). */
-	const beat = (record: Recorded, to: DeliveryContext, address: MessageAddress, signal: AbortSignal): void => {
+	const beat = (record: Recorded, to: DeliveryContext, target: DirectPeerDeliveryContext | null, address: MessageAddress, signal: AbortSignal): void => {
 		const every = record.aliveWithinMs as number;
 		const due = (): void => {
 			// The host's alive goes on until it submits the end or the signal fires, the wait for a part included (EM11).
@@ -323,11 +400,15 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			const remaining = record.lastSubmitted + every - at;
 			if (remaining <= 0) {
 				record.lastSubmitted = at;
-				Promise.resolve(sendTo(address.operation, to, writeAlive(address) as unknown as JsonValue)).catch((error: unknown) => {
-					// An alive refused before the end is decided ends the invocation failed; after it, nothing.
-					const code = (error as { code?: unknown } | null)?.code;
-					selectFailure(record, typeof code === "string" ? code : null, "alive");
-				});
+				if (target === null) {
+					selectFailure(record, null, "alive");
+				} else {
+					Promise.resolve(sendTo(address.operation, to, target, writeAlive(address) as unknown as JsonValue)).catch((error: unknown) => {
+						// An alive refused before the end is decided ends the invocation failed; after it, nothing.
+						const code = (error as { code?: unknown } | null)?.code;
+						selectFailure(record, typeof code === "string" ? code : null, "alive");
+					});
+				}
 			}
 			try {
 				record.aliveTimer = clock.schedule(remaining <= 0 ? every : Math.ceil(remaining), due);
@@ -395,6 +476,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		const message = readMessage(payload);
 		const type = (payload as { readonly type?: unknown } | null)?.type;
 		if (type === "cancel" || type === "alive") return control(operation, message, delivery);
+		const directPeerTarget = captureEligibleDirectPeer(delivery, hostMode);
 		const wellFormed = message !== undefined && message.type === "request" && message.attempt === label && message.operation === operation.name;
 		// A well-formed request is recorded before the evidence port is asked, unless its attempt already is.
 		let record: Recorded | undefined;
@@ -407,7 +489,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		if (record !== undefined && record.aliveWithinMs !== undefined) {
 			const request = message as RequestMessage;
 			watchLiveness(record);
-			beat(record, delivery, { invocation: request.invocation, attempt: request.attempt, operation: operation.name }, signal);
+			beat(record, delivery, directPeerTarget, { invocation: request.invocation, attempt: request.attempt, operation: operation.name }, signal);
 		}
 		try {
 			let evidenceAnswer: JsonValue = null;
@@ -423,7 +505,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 				}
 			}
 			if (!wellFormed) {
-				if (isAttemptId(label)) await reply({ invocation: invocationOfAttempt(label), attempt: label, operation: operation.name }, { outcome: "refused", refusal: malformedRequest() }, delivery);
+				if (isAttemptId(label)) await reply({ invocation: invocationOfAttempt(label), attempt: label, operation: operation.name }, { outcome: "refused", refusal: malformedRequest() }, delivery, directPeerTarget);
 				return;
 			}
 			const request = message as RequestMessage;
@@ -437,12 +519,12 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 					await record.inFlight;
 					record.endSubmitted = true;
 				}
-				await reply(address, record?.failure ?? content, delivery, counted ? record?.admitted ?? 0 : undefined);
+				await reply(address, record?.failure ?? content, delivery, directPeerTarget, counted ? record?.admitted ?? 0 : undefined);
 			};
 			if (evidenceFailed) return await end({ outcome: "failed", reason: "operation-failed", agpCode: null });
 			const verdict = operation.prepared.judge(request.input);
 			if (verdict.verdict === "misfit") return await end({ outcome: "refused", refusal: inputMisfit(operation.name, verdict.misfits) });
-			const part = operation.parts && record !== undefined ? partOf(record, address, delivery, signal) : undefined;
+			const part = operation.parts && record !== undefined ? partOf(record, address, delivery, directPeerTarget, signal) : undefined;
 			const context = Object.freeze({ service, operation: operation.name, invocation: request.invocation, attempt: request.attempt, delivery, evidence: evidenceAnswer, signal, ...(part === undefined ? {} : { part }) });
 			// Running the operation and reading what it returned as plain data are one failure boundary (EM11; D54, D55).
 			const running = awaitNativePromise(() => operation.handler(request.input, context));
@@ -461,7 +543,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 	};
 
 	/** Submits the next waiting part once the one before it has settled, one at a time, in call order (EM11). */
-	const pump = (record: Recorded, address: MessageAddress, to: DeliveryContext, signal: AbortSignal): void => {
+	const pump = (record: Recorded, address: MessageAddress, to: DeliveryContext, target: DirectPeerDeliveryContext | null, signal: AbortSignal): void => {
 		if (record.inFlight !== undefined) return;
 		if (stopped(record, signal)) return flush(record);
 		const next = record.queue.shift();
@@ -471,7 +553,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			next.resolve(false);
 			flush(record);
 		};
-		if (!next.reading.ok) return failNow();
+		if (target === null || !next.reading.ok) return failNow();
 		const message = writePart(address, record.submitted + 1, next.reading.value) as unknown as JsonValue;
 		if (!crossesAgp(message)) return failNow();
 		record.submitted++;
@@ -480,7 +562,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 		} catch {
 			// The alive's count goes on from the last time known.
 		}
-		record.inFlight = Promise.resolve(sendTo(address.operation, to, message)).then(() => {
+		record.inFlight = Promise.resolve(sendTo(address.operation, to, target, message)).then(() => {
 			record.admitted++;
 			next.resolve(true);
 		}, (error: unknown) => {
@@ -490,12 +572,12 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			flush(record);
 		}).finally(() => {
 			record.inFlight = undefined;
-			pump(record, address, to, signal);
+			pump(record, address, to, target, signal);
 		});
 	};
 
 	/** The `part` an operation in parts is given for one request (EM11). */
-	const partOf = (record: Recorded, address: MessageAddress, to: DeliveryContext, signal: AbortSignal): ((answer: JsonInput) => Promise<boolean>) => {
+	const partOf = (record: Recorded, address: MessageAddress, to: DeliveryContext, target: DirectPeerDeliveryContext | null, signal: AbortSignal): ((answer: JsonInput) => Promise<boolean>) => {
 		// A waiting part resolves false as soon as the signal fires.
 		if (!signal.aborted) signal.addEventListener("abort", () => flush(record), { once: true });
 		return (answer: JsonInput): Promise<boolean> => {
@@ -504,7 +586,7 @@ export async function createOperationHost(node: AgpNode, options: HostOptions): 
 			const reading = readPlainJson(answer);
 			return new Promise<boolean>((resolve) => {
 				record.queue.push({ reading, resolve });
-				pump(record, address, to, signal);
+				pump(record, address, to, target, signal);
 			});
 		};
 	};

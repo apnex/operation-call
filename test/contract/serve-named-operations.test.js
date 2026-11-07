@@ -85,7 +85,10 @@ function refusingNode(codes) {
 	return {
 		exposed, sent, nodeId: "fake-host",
 		async expose(endpoint, handler) { exposed.set(endpoint, handler); return { close: async () => {} }; },
-		async send(source, destination, payload, options) {
+		async send() {
+			throw new Error("a host must never call node.send; it must use node.sendDirectPeer");
+		},
+		async sendDirectPeer(source, destination, payload, options) {
 			sent.push({ source, destination, payload, options });
 			const code = codes.shift();
 			if (code !== undefined) throw Object.assign(new Error("refused"), { code });
@@ -94,7 +97,8 @@ function refusingNode(codes) {
 	};
 }
 
-const delivery = { messageId: "m", correlationId: ATTEMPT, source: { endpoint: "operation-call/replies", originNodeId: "caller-node" }, destination: "svc/op", receivedAt: "2026-01-01T00:00:00.000Z", operationsRevision: "1" };
+const directPeer = { originNodeId: "caller-node", authorizationAssociation: { mode: "unauthenticated" } };
+const delivery = { messageId: "m", correlationId: ATTEMPT, source: { endpoint: "operation-call/replies", originNodeId: "caller-node" }, destination: "svc/op", receivedAt: "2026-01-01T00:00:00.000Z", operationsRevision: "1", directPeer };
 
 test("an answer whose send AGP refuses is replaced, once, by answer-not-sendable with AGP's code; when that is refused too, nothing more is sent", async () => {
 	for (const [codes, expected] of [
@@ -110,7 +114,7 @@ test("an answer whose send AGP refuses is replaced, once, by answer-not-sendable
 		for (const s of node.sent) {
 			assert.equal(s.source, "svc/op", "from the operation's endpoint");
 			assert.equal(s.destination, "operation-call/replies", "to the request's source endpoint");
-			assert.deepEqual(s.options, { correlationId: ATTEMPT, destinationSelector: { originNodeId: "caller-node", mode: "pinned" } });
+			assert.deepEqual(s.options, { correlationId: ATTEMPT, target: directPeer, minimumProtection: "none" });
 		}
 	}
 	const node = refusingNode(["NO_ROUTE"]);
@@ -224,4 +228,97 @@ test("over AGP, a result whose inspection throws ends the caller's invocation un
 		assert.deepEqual([ending.ending, ending.reason, ending.agpCode], ["unknown", "operation-failed", null], MALFORMED_RESULTS[i][0]);
 	}
 	assert.equal(topology.callClock.pending(), 0, "every bound's timer was cancelled by an ending before it");
+});
+
+test("D11-E1, D59-D61, D75: createOperationHost requires node.sendDirectPeer, validates mode and minimumProtection, captures directPeer as plain data once, sends nothing when directPeer is absent or ineligible, and sends every reply branch via node.sendDirectPeer", async () => {
+	await assert.rejects(() => createOperationHost({ expose: async () => ({ close: async () => {} }), send: async () => ({}) }, { service: "svc" }), TypeError);
+	const baseNode = () => refusingNode([]);
+	await assert.rejects(() => createOperationHost(baseNode(), { service: "svc", mode: "bogus" }), TypeError);
+	await assert.rejects(() => createOperationHost(baseNode(), { service: "svc", minimumProtection: "bogus" }), TypeError);
+	const unhandled = [];
+	const onUnhandled = (r) => unhandled.push(r);
+	process.on("unhandledRejection", onUnhandled);
+	try {
+		await assert.rejects(
+			() => createOperationHost(baseNode(), { service: "svc", get mode() { throw Object.assign(new Error("mode getter"), { p: Promise.reject(new Error("mode promise")) }); } }),
+			/mode getter/,
+		);
+		await assert.rejects(
+			() => createOperationHost(baseNode(), { service: "svc", mode: Promise.reject(new Error("invalid mode promise")) }),
+			TypeError,
+		);
+		await assert.rejects(
+			() => createOperationHost(baseNode(), { service: "svc", minimumProtection: Promise.reject(new Error("invalid protection promise")) }),
+			TypeError,
+		);
+		const authNode = refusingNode(["MESSAGE_TOO_LARGE"]);
+		const { host } = await createOperationHost(authNode, { service: "svc", mode: "authenticated" });
+		const strictShape = { $schema: "urn:apnex:shape-check:dialect:1", type: "object", required: ["n"], properties: { n: { type: "integer" } }, additionalProperties: false };
+		await host.declare({ name: "op", input: strictShape, answers: "whole" }, (input) => {
+			if (input.n === -1) throw new Error("boom");
+			if (input.n === -2) return { outcome: "refused", refusal: { part: "p", code: "c", what: "w", why: "w", fix: "f", details: { big: 9007199254740992 } } };
+			return { outcome: "answered", answer: input.n };
+		});
+		const validAuthTarget = {
+			originNodeId: "caller-node",
+			authorizationAssociation: { mode: "authenticated", issuer: "zorg-credential-issuer/v1", principal: "alice", instanceBinding: "inst-1" },
+		};
+		const authDelivery = (...args) => {
+			const dp = args.length === 0 ? validAuthTarget : args[0];
+			return {
+				messageId: "m",
+				correlationId: ATTEMPT,
+				source: { endpoint: "operation-call/replies", originNodeId: "caller-node" },
+				destination: "svc/op",
+				receivedAt: "2026-01-01T00:00:00.000Z",
+				operationsRevision: "1",
+				...(dp === undefined ? {} : { directPeer: dp }),
+			};
+		};
+		// First call: valid authenticated target; primary send rejects with MESSAGE_TOO_LARGE, fallback sends answer-not-sendable with the same target and default minimumProtection "confidentiality-and-integrity".
+		await authNode.exposed.get("svc/op")(request("op", { n: 1 }), { delivery: authDelivery(), signal: new AbortController().signal });
+		assert.equal(authNode.sent.length, 2);
+		assert.deepEqual(authNode.sent[0].options, { correlationId: ATTEMPT, target: validAuthTarget, minimumProtection: "confidentiality-and-integrity" });
+		assert.deepEqual(authNode.sent[1].options, { correlationId: ATTEMPT, target: validAuthTarget, minimumProtection: "confidentiality-and-integrity" });
+		assert.deepEqual(authNode.sent[1].payload, end({ outcome: "failed", reason: "answer-not-sendable", agpCode: "MESSAGE_TOO_LARGE" }));
+
+		// Describe endpoint also uses sendDirectPeer with minimumProtection "confidentiality-and-integrity".
+		authNode.sent.length = 0;
+		await authNode.exposed.get("svc/describe")(request("describe", {}), { delivery: authDelivery(), signal: new AbortController().signal });
+		assert.equal(authNode.sent.length, 1);
+		assert.equal(authNode.sent[0].source, "svc/describe");
+		assert.deepEqual(authNode.sent[0].options, { correlationId: ATTEMPT, target: validAuthTarget, minimumProtection: "confidentiality-and-integrity" });
+
+		// Oversized / non-crossesAgp refusal becomes answer-not-sendable failed end.
+		authNode.sent.length = 0;
+		await authNode.exposed.get("svc/op")(request("op", { n: -2 }), { delivery: authDelivery(), signal: new AbortController().signal });
+		assert.equal(authNode.sent.length, 1);
+		assert.deepEqual(authNode.sent[0].payload, end({ outcome: "failed", reason: "answer-not-sendable", agpCode: null }));
+
+		// Ineligible directPeer targets (absent, unauthenticated on authenticated host, mismatched originNodeId, getter, rejected promise, empty principal) produce zero sends on any branch and skip fallback.
+		let getterReads = 0;
+		const ineligibleTargets = [
+			undefined,
+			null,
+			{ originNodeId: "caller-node", authorizationAssociation: { mode: "unauthenticated" } },
+			{ originNodeId: "caller-node", authorizationAssociation: { ...validAuthTarget.authorizationAssociation, mode: "unauthenticated" } },
+			{ originNodeId: "other-node", authorizationAssociation: validAuthTarget.authorizationAssociation },
+			{ originNodeId: "caller-node", authorizationAssociation: { ...validAuthTarget.authorizationAssociation, principal: "" } },
+			{ originNodeId: "caller-node", authorizationAssociation: { ...validAuthTarget.authorizationAssociation, extra: "x" } },
+			{ get originNodeId() { getterReads++; return "caller-node"; }, authorizationAssociation: validAuthTarget.authorizationAssociation, p: Promise.reject(new Error("dp getter promise")) },
+		];
+		authNode.sent.length = 0;
+		for (const badTarget of ineligibleTargets) {
+			await authNode.exposed.get("svc/op")(request("op", { n: 1 }), { delivery: authDelivery(badTarget), signal: new AbortController().signal });
+			await authNode.exposed.get("svc/op")(request("op", { n: "misfit" }), { delivery: authDelivery(badTarget), signal: new AbortController().signal });
+			await authNode.exposed.get("svc/op")(request("op", { n: 1 }, { extra: 1 }), { delivery: authDelivery(badTarget), signal: new AbortController().signal });
+			await authNode.exposed.get("svc/op")(request("op", { n: -1 }), { delivery: authDelivery(badTarget), signal: new AbortController().signal });
+		}
+		for (let i = 0; i < 20; i++) await turn();
+		assert.equal(authNode.sent.length, 0, "ineligible directPeer targets never produce a send on any branch");
+		assert.equal(getterReads, 0, "getters on directPeer are never invoked");
+	} finally {
+		process.off("unhandledRejection", onUnhandled);
+	}
+	assert.deepEqual(unhandled, [], "all rejected promises in options and directPeer were observed");
 });

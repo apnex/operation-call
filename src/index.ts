@@ -17,7 +17,7 @@
 export { createCaller, MAX_BOUND_MS, readCallRequest, type Caller, type CallerOptions } from "./caller.js";
 export { readCallEnding } from "./call-ending.js";
 export { readRefusalRecord } from "./refusal.js";
-export { createOperationHost, type DeclarationOutcome, type DeliveryContext, type EvidenceFunction, type HostOpening, type HostOptions, type OperationContext, type OperationHandler, type OperationHost, type OperationResult } from "./host.js";
+export { createOperationHost, type DeclarationOutcome, type DeliveryContext, type EvidenceFunction, type HostMinimumProtection, type HostMode, type HostOpening, type HostOptions, type OperationContext, type OperationHandler, type OperationHost, type OperationResult } from "./host.js";
 export { DECLARATION_LIMITS, type AnswerMode, type DescribedOperation, type Description, type HostRefusal, type HostRefusalCode, type OperationDeclaration } from "./declarations.js";
 export { systemCallClock, systemIdentitySource, type CallClock, type ClockTimer } from "./system-ports.js";
 export type { IdentitySource } from "./names.js";

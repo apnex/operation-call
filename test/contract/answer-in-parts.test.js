@@ -64,7 +64,7 @@ test("host: parts go one at a time in call order, each resolving true once admit
 	assert.deepEqual(h.sent("part", a.attempt).map((s) => [s.payload.sequence, s.payload.answer]), [[1, "x"], [2, { y: 1 }], [3, 3]]);
 	for (const s of h.sent("part", a.attempt)) {
 		assert.equal(s.destination, "operation-call/replies");
-		assert.deepEqual([s.options.correlationId, s.options.destinationSelector], [a.attempt, { originNodeId: "caller", mode: "pinned" }], "pinned to the request's origin, labelled with its attempt");
+		assert.deepEqual([s.options.correlationId, s.options.target, s.options.minimumProtection], [a.attempt, { originNodeId: "caller", authorizationAssociation: { mode: "unauthenticated" } }, "none"], "pinned to the request's directPeer target, labelled with its attempt");
 	}
 	assert.deepEqual(results, [true, true, true]);
 	assert.equal(served.settled, true);
@@ -239,7 +239,7 @@ test("host: the host's alive goes every aliveWithinMs without a part, from the r
 	assert.equal(h.sent("alive", a.attempt).length, 2, "another a further aliveWithinMs on");
 	const sent = h.sent("alive", a.attempt)[0];
 	assert.deepEqual(sent.payload, { operationCall: 1, type: "alive", invocation: a.invocation, attempt: a.attempt, operation: "quiet" });
-	assert.deepEqual([sent.source, sent.destination, sent.options.correlationId, sent.options.destinationSelector], ["svc/quiet", "operation-call/replies", a.attempt, { originNodeId: "caller", mode: "pinned" }]);
+	assert.deepEqual([sent.source, sent.destination, sent.options.correlationId, sent.options.target, sent.options.minimumProtection], ["svc/quiet", "operation-call/replies", a.attempt, { originNodeId: "caller", authorizationAssociation: { mode: "unauthenticated" } }, "none"]);
 	// Its timer held while the caller's alives keep the invocation, the host's next alive falls 200 ms late.
 	await h.deliver("quiet", controlOf("alive", a, "quiet"));
 	h.clock.move(150);
@@ -387,6 +387,33 @@ test("host: the record and every timer go once the last send settled, a refused 
 	assert.ok(h.clock.pending() > 0, "a request in flight keeps its timers");
 	await h.host.close();
 	assert.equal(h.clock.pending(), 0, "closing finishes every request");
+});
+
+test("host: when directPeer is absent or ineligible on an operation in parts, part resolves false and alive fires the invocation's signal with zero sends", async () => {
+	const h = await controlledHost({ mode: "authenticated" });
+	let partOutcome;
+	await h.declare("emit", async (_input, c) => {
+		partOutcome = await c.part("one");
+		return { outcome: "answered", answer: "done" };
+	}, "parts");
+	const a1 = newAttempt();
+	await h.deliver("emit", requestOf(a1, "emit", {}, 100), { directPeer: undefined });
+	assert.equal(partOutcome, false);
+	assert.equal(h.sends.length, 0);
+
+	let quietAborted = false;
+	await h.declare("quiet", (_input, c) => new Promise((resolve) => c.signal.addEventListener("abort", () => {
+		quietAborted = true;
+		resolve({ outcome: "answered", answer: "stopped" });
+	}, { once: true })), "parts");
+	const a2 = newAttempt();
+	const served = watch(h.deliver("quiet", requestOf(a2, "quiet", {}, 100), { directPeer: { originNodeId: "caller", authorizationAssociation: { mode: "unauthenticated" } } }));
+	await turns();
+	h.clock.advance(100);
+	await turns();
+	assert.equal(quietAborted, true);
+	assert.equal(served.settled, true);
+	assert.equal(h.sends.length, 0);
 });
 
 // The caller.

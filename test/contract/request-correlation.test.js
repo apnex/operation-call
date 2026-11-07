@@ -67,5 +67,43 @@ test("the host answers under the request's correlation label, from the operation
 	assert.deepEqual(payload, { operationCall: 1, type: "end", invocation: "1791540000000-0123456789abcdef", attempt, operation: "op", outcome: "answered", answer: [1] });
 	assert.equal(delivery.correlationId, attempt);
 	assert.deepEqual(delivery.source, { endpoint: "svc/op", originNodeId: "host-a" });
+	assert.deepEqual(delivery.directPeer, { originNodeId: "host-a", authorizationAssociation: { mode: "unauthenticated" } });
 	await turn();
+});
+
+test("D11-E1: when two sessions share an originNodeId with distinct instanceBindings, the host's sendDirectPeer reply reaches only the requesting session's directPeer target", async (t) => {
+	const topology = await openTopology({
+		makeCaller: false,
+		identityAdmission: {
+			evaluate: async (req) => ({
+				decision: "allow",
+				authorizationAssociation: {
+					mode: "authenticated",
+					issuer: "zorg-credential-issuer/v1",
+					principal: "alice",
+					instanceBinding: `${req.remoteNodeId}:${req.remoteSessionId}`,
+				},
+			}),
+		},
+	});
+	t.after(() => topology.close());
+	const [hostA] = topology.hosts;
+	const opening = await createOperationHost(hostA.node, { service: "svc", mode: "authenticated", minimumProtection: "none" });
+	let seenDirectPeer;
+	await opening.host.declare({ name: "op", input: ANY, answers: "whole" }, (input, context) => {
+		seenDirectPeer = context.delivery.directPeer;
+		return { outcome: "answered", answer: input };
+	});
+	const replies = [];
+	await topology.callerNode.expose("operation-call/replies", async (payload, context) => { replies.push({ payload, delivery: context.delivery }); });
+	await topology.hooks.ready("host-a", "svc/op");
+	const attempt = "1791540000000-0123456789abcdef.89abcdef";
+	await topology.callerNode.send("operation-call/replies", "svc/op",
+		{ operationCall: 1, type: "request", invocation: "1791540000000-0123456789abcdef", attempt, operation: "op", input: "isolated" },
+		{ correlationId: attempt, destinationSelector: { originNodeId: "host-a", mode: "pinned" } });
+	await until(() => replies.length === 1, "the authenticated direct-peer answer");
+	assert.equal(seenDirectPeer.originNodeId, "caller");
+	assert.equal(seenDirectPeer.authorizationAssociation.mode, "authenticated");
+	assert.equal(seenDirectPeer.authorizationAssociation.principal, "alice");
+	assert.equal(replies[0].payload.answer, "isolated");
 });
