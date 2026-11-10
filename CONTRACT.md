@@ -1,8 +1,8 @@
 ---
-id: unminted
+id: C5
 category: component
 title: operation-call - named operations with an honest ending over one-way delivery
-status: draft
+status: active
 hydrate-when: Parts of your system call each other by name, and a caller must know how each call ended, including when that cannot be known
 sovereignty: internal
 supersedes: []
@@ -12,8 +12,8 @@ related: [C0, C1, A3]
 # operation-call
 
 The contract of record for operation-call: what a consumer can depend on, written before any consumer's architecture so that it states the whole offer.\
-It also carries the fields of a mission-kit registry entry, and that entry is generated from this file when the component is filed, never written as a second copy.\
-The registry id is unminted on purpose; one is minted only when the entry is admitted to the registry.
+It also carries the fields of a mission-kit registry entry, and that entry is generated from this file, never written as a second copy.\
+Admitted to mission-kit's component registry as `C5`, its first release `0.1.0` (`docs/DECISIONS.md` `D4`); its frontmatter is the entry's.
 
 ---
 
@@ -58,10 +58,10 @@ Under zorg's `D51`, `D59`, `D60`, `D61` and `D75` (`upstream/agp-direct-peer-sen
 
 ## Reference
 
-This repository, `apnex/operation-call`, private until its first working code is certified.\
+This repository, `apnex/operation-call`, and its package `@apnex/operation-call`, released only by its own CI as a tarball attached to a GitHub release, drafted, verified and then published (`.github/workflows/release.yml`).\
 The package `@apnex/operation-call` exports `createCaller`, `createOperationHost`, `readCallEnding` (which reads a candidate through `readPlainJson`, checks the exact fields of one of the four `CallEnding` kinds - direct, hop or whole-find, including `attempt: null` on a whole-find `bound-passed` ending, with no single-message size or depth cap - and returns `{ok: true, ending}` deeply frozen or `{ok: false}`), `readRefusalRecord` (which reads a candidate through `readPlainJson`, checks `EM9`'s exact fields and any `SD4` `misfits`, and returns `{ok: true, refusal}` deeply frozen or `{ok: false}`), `readCallRequest` (which reads `host`, `service`, `operation`, `bound`, `invocation`, `repeat`, `signal` and `onPart` at most once each and snapshots `input` once through `snapshotJson`, throwing `EM12`'s `RangeError` or `TypeError` for any programming error and returning the validated request with the live `AbortSignal`), `systemCallClock`, `systemIdentitySource`, `MAX_BOUND_MS` and `DECLARATION_LIMITS`; `@apnex/operation-call/message-format` exports the message format and the caller's own checks; and `@apnex/operation-call/caller-suite` exports `registerCallerSuite` and `callerSuiteRows`, the caller contract suite, as `export-map.json` records.\
 `answer-in-parts` and `cancel-invocation` are served - a call request's `onPart` and abort signal, an operation's `answers: "parts"` and `part`, the messages `alive` and `cancel`, and the caller suite's rows of both - built in zorg's Delta 4 under `D64`, and nothing is deferred.\
-It depends on `@agp/node` and `@apnex/shape-check` through `file:` links, takes AGP's types only, and imports no module particular to one runtime.
+It depends on `@apnex/shape-check` through its release file, takes AGP's types only, from `@agp/node` in its development dependencies, and imports no module particular to one runtime.
 
 ---
 

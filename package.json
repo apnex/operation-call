@@ -1,6 +1,6 @@
 {
   "name": "@apnex/operation-call",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Give every invocation of a named operation exactly one honest ending, within a bound its caller chose.",
   "license": "MIT",
@@ -11,7 +11,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -39,13 +39,13 @@
     "docs:check": "tools/check-docs.sh"
   },
   "dependencies": {
-    "@agp/node": "file:../agp/packages/node",
-    "@apnex/shape-check": "file:../shape-check"
+    "@apnex/shape-check": "https://github.com/apnex/shape-check/releases/download/v0.1.0/apnex-shape-check-0.1.0.tgz"
   },
   "devDependencies": {
     "@agp/core": "file:../agp/packages/core",
+    "@agp/node": "file:../agp/packages/node",
     "@agp/transport-loopback": "file:../agp/packages/transport-loopback",
-    "@apnex/entity-store": "file:../entity-store",
+    "@apnex/entity-store": "https://github.com/apnex/entity-store/releases/download/v0.1.0/apnex-entity-store-0.1.0.tgz",
     "@types/node": "^24.0.0",
     "typescript": "5.9.3"
   }

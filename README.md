@@ -10,9 +10,9 @@ Its contract tests run its caller contract suite against its own caller, and its
 - `CONTRACT.md` - what a consumer can depend on, one capability per row.
 - `docs/DECISIONS.md` - the rulings about this component.
 
-It belongs to a component set first composed by zorg (`apnex/zorg`), and is private until its first working code.
+It belongs to a component set first composed by zorg (`apnex/zorg`), and is released only by its own CI, as a tarball attached to a GitHub release with its SHA-512 beside it, which a consumer names in its `package.json`: `https://github.com/apnex/operation-call/releases/download/v0.1.0/apnex-operation-call-0.1.0.tgz` for `0.1.0`.
 
-It depends on `@agp/node` and `@apnex/shape-check` through `file:` links to checkouts beside it, and its tests on `@agp/core`, `@agp/transport-loopback` and `@apnex/entity-store` the same way.\
+It depends on `@apnex/shape-check` through its release file, and takes AGP's types only, from `@agp/node`, `@agp/core` and `@agp/transport-loopback` in its development dependencies, `file:` links to an AGP checkout beside it; its tests use `@apnex/entity-store` through its release file.\
 Each such link installs none of its package's own dependencies, so AGP's packages find theirs through AGP's own workspace install, and each checkout must be installed and built first, since no `dist/` is committed.
 
 To run the tests from clean checkouts:
