@@ -108,10 +108,18 @@ test("only the file of default ports reads a clock or randomness; everything els
 	}
 });
 
-test("the package depends on AGP's node and on shape-check through file: links to checkouts beside it, and on nothing else at run time", () => {
-	assert.deepEqual(pkg.dependencies, { "@agp/node": "file:../agp/packages/node", "@apnex/shape-check": "file:../shape-check" });
+const validDepSpec = (name, spec) => spec === `file:../${name}` || new RegExp(`^https://github\\.com/apnex/${name}/releases/download/v0\\.\\d+\\.\\d+/apnex-${name}-0\\.\\d+\\.\\d+\\.tgz$`).test(spec);
+
+test("the package depends on shape-check (and AGP's node as a runtime or dev dependency) through file: links or pinned GitHub release URLs, and on nothing else at run time", () => {
+	const depKeys = Object.keys(pkg.dependencies ?? {}).sort();
+	assert.ok(
+		(depKeys.length === 1 && depKeys[0] === "@apnex/shape-check") ||
+		(depKeys.length === 2 && depKeys[0] === "@agp/node" && depKeys[1] === "@apnex/shape-check" && pkg.dependencies["@agp/node"] === "file:../agp/packages/node"),
+	);
+	assert.ok(validDepSpec("shape-check", pkg.dependencies["@apnex/shape-check"]));
 	for (const [name, spec] of Object.entries(pkg.devDependencies)) {
-		if (name.startsWith("@agp/") || name.startsWith("@apnex/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
+		if (name.startsWith("@agp/")) assert.match(spec, /^file:\.\.\//, `${name} is linked from a checkout beside this one`);
+		else if (name.startsWith("@apnex/")) assert.ok(validDepSpec(name.slice(7), spec), `${name} is linked from a checkout or pinned release`);
 	}
-	assert.equal(pkg.devDependencies["@apnex/entity-store"], "file:../entity-store", "entity-store, for E9's comparison");
+	assert.ok(validDepSpec("entity-store", pkg.devDependencies["@apnex/entity-store"]), "entity-store, for E9's comparison");
 });
